@@ -143,6 +143,16 @@ export async function verifyIdentityProof(
     throw classifyVerificationError(error)
   }
 
+  // did-jwt only enforces its audience option when the payload carries an
+  // aud claim, so a proof that omits aud would otherwise verify for any
+  // seller. Require an exact match ourselves.
+  if (payload.aud !== audience) {
+    throw new IdentityError(
+      "identity_mismatched",
+      "Identity proof was issued for a different audience"
+    )
+  }
+
   const issuer = payload.iss
   if (!isDidUri(issuer)) {
     throw new IdentityError(

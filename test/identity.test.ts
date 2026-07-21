@@ -132,6 +132,31 @@ describe("identity proof verification (did:web + JWT)", () => {
     }
   })
 
+  it("rejects a proof that omits aud entirely as identity_mismatched", async () => {
+    // did-jwt skips its audience check when the payload has no aud claim,
+    // so this must be caught by our own exact-match guard.
+    const { identity, host } = await hostedIdentity()
+    try {
+      const { createJwt, createJwtSigner } = await import(
+        "@agentcommercekit/jwt"
+      )
+      const proof = await createJwt(
+        { nonce: "nonce-without-aud" },
+        {
+          issuer: identity.did,
+          signer: createJwtSigner(identity.keypair),
+          expiresIn: 300
+        }
+      )
+      await expectRejection(
+        verifyIdentityProof(proof, { audience: SELLER_DID }),
+        "identity_mismatched"
+      )
+    } finally {
+      await host.close()
+    }
+  })
+
   it("rejects a proof issued for a different audience as identity_mismatched", async () => {
     const { identity, host } = await hostedIdentity()
     try {
