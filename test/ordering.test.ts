@@ -3,6 +3,9 @@
  * strictly precedes payment. Every rejected-identity path must leave the
  * settlement adapter (FacilitatorClient) untouched.
  */
+import { createDidKeyUri } from "@agentcommercekit/did"
+import { createJwt, createJwtSigner } from "@agentcommercekit/jwt"
+import { generateKeypair } from "@agentcommercekit/keys"
 import { afterEach, describe, expect, it } from "vitest"
 import { runBuyer } from "../src/buyer/buyer.js"
 import { startDidHost } from "../src/buyer/did-host.js"
@@ -10,6 +13,7 @@ import { createIdentity, createIdentityProof } from "../src/identity.js"
 import { PROTECTED_PATH } from "../src/seller/server.js"
 import { startTestSeller } from "./helpers.js"
 import type { Scenario } from "../src/buyer/buyer.js"
+import type { DidHost } from "../src/buyer/did-host.js"
 import type { TestSeller } from "./helpers.js"
 
 // Unfunded throwaway key: fine here because the fake facilitator approves
@@ -18,11 +22,40 @@ const TEST_PRIVATE_KEY =
   "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as const
 
 let seller: TestSeller | undefined
+const hosts: DidHost[] = []
 
 afterEach(async () => {
   await seller?.close()
   seller = undefined
+  await Promise.all(hosts.map((h) => h.close()))
+  hosts.length = 0
 })
+
+/**
+ * Mint a hosted did:web identity and sign the scenario's proof. The host stays
+ * up (closed in afterEach) so the seller can resolve it during the request.
+ * Returns undefined for the missing-identity case.
+ */
+async function buildProof(
+  sellerDid: string,
+  scenario: Scenario,
+): Promise<string | undefined> {
+  if (scenario === "missing-identity") return undefined
+  const host = await startDidHost()
+  hosts.push(host)
+  const identity = await createIdentity(host.baseUrl)
+  host.setDocument(identity.didDocument)
+  const keypair =
+    scenario === "mismatched-identity"
+      ? await generateKeypair("secp256k1") // key the DID does not publish
+      : identity.keypair
+  return createIdentityProof({
+    issuerDid: identity.did,
+    keypair,
+    audience: sellerDid,
+    ...(scenario === "expired-identity" ? { expiresInSeconds: -600 } : {}),
+  })
+}
 
 async function runScenario(scenario: Scenario) {
   seller = await startTestSeller()
@@ -62,6 +95,51 @@ describe("identity-before-payment ordering", () => {
       expect(seller.facilitator.settleCalls).toHaveLength(0)
     },
   )
+
+  it.each([
+    ["missing-identity", 401, "identity_missing"],
+    ["mismatched-identity", 403, "identity_mismatched"],
+    ["expired-identity", 401, "identity_expired"],
+  ] as const satisfies readonly (readonly [Scenario, number, string])[])(
+    "%s WITH a payment header: still rejected before settlement",
+    async (scenario, status, code) => {
+      // The rejected-identity cases above run without a payment header. Repeat
+      // them with one present, so a regression that skips the identity gate
+      // when PAYMENT-SIGNATURE is set cannot pass unnoticed.
+      seller = await startTestSeller()
+      const proof = await buildProof(seller.identity.did, scenario)
+      const response = await fetch(`${seller.url}${PROTECTED_PATH}`, {
+        headers: {
+          ...(proof ? { authorization: `Bearer ${proof}` } : {}),
+          "payment-signature": "bm90LWEtcmVhbC1wYXltZW50",
+        },
+      })
+      expect(response.status).toBe(status)
+      const body: unknown = await response.json()
+      expect(body).toMatchObject({ error: code })
+      expect(seller.facilitator.verifyCalls).toHaveLength(0)
+      expect(seller.facilitator.settleCalls).toHaveLength(0)
+    },
+  )
+
+  it("did:key identity: rejected as identity_invalid before settlement", async () => {
+    // The default resolver handles did:key too, but a self-issued did:key
+    // proves no domain control. The gate must require did:web.
+    seller = await startTestSeller()
+    const keypair = await generateKeypair("secp256k1")
+    const did = createDidKeyUri(keypair)
+    const proof = await createJwt(
+      { aud: seller.identity.did, nonce: "did-key-nonce" },
+      { issuer: did, signer: createJwtSigner(keypair), expiresIn: 300 },
+    )
+    const response = await fetch(`${seller.url}${PROTECTED_PATH}`, {
+      headers: { authorization: `Bearer ${proof}` },
+    })
+    expect(response.status).toBe(401)
+    expect(await response.json()).toMatchObject({ error: "identity_invalid" })
+    expect(seller.facilitator.verifyCalls).toHaveLength(0)
+    expect(seller.facilitator.settleCalls).toHaveLength(0)
+  })
 
   it("garbage identity proof: rejected without reaching the settlement adapter", async () => {
     seller = await startTestSeller()

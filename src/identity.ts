@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import {
   createDidWebDocumentFromKeypair,
   getDidResolver,
-  isDidUri,
+  isDidWebUri,
 } from "@agentcommercekit/did"
 import { createJwt, createJwtSigner, verifyJwt } from "@agentcommercekit/jwt"
 import { generateKeypair } from "@agentcommercekit/keys"
@@ -94,22 +94,43 @@ const MAX_PROOF_LIFETIME_SECONDS = 900
 /**
  * In-memory nonce replay cache. The ACK libraries verify signatures and
  * standard JWT claims but leave replay protection to the application.
- * ponytail: in-memory Map with an O(n) prune per call, bounded because
- * verifyIdentityProof caps proof lifetime; swap for a shared store if the
- * seller ever runs more than one instance.
+ * ponytail: single-process only; swap for a shared store (Redis) if the
+ * seller ever runs more than one instance (see docs/architecture.md).
  */
 export class NonceCache {
   private readonly seen = new Map<string, number>()
 
+  /**
+   * Hard bound on entries. Pruning is amortized (only at this ceiling), so a
+   * flood of payment-bearing requests cannot force an O(n) scan per request.
+   */
+  private static readonly MAX_ENTRIES = 100_000
+
   /** Returns false if the nonce was already used and has not expired. */
   markUsed(nonce: string, expiresAtMs: number): boolean {
+    const existing = this.seen.get(nonce)
+    if (existing !== undefined) {
+      if (existing > Date.now()) return false
+      this.seen.delete(nonce) // expired: allow reuse
+    }
+    if (this.seen.size >= NonceCache.MAX_ENTRIES) this.prune()
+    this.seen.set(nonce, expiresAtMs)
+    return true
+  }
+
+  /** Drop expired entries; if still at the cap, evict oldest (insertion order). */
+  private prune(): void {
     const now = Date.now()
     for (const [key, expiry] of this.seen) {
       if (expiry <= now) this.seen.delete(key)
     }
-    if (this.seen.has(nonce)) return false
-    this.seen.set(nonce, expiresAtMs)
-    return true
+    // Under a sustained flood of unexpired nonces this evicts the oldest still
+    // -valid entry, so it could be replayed: acceptable degradation vs OOM.
+    while (this.seen.size >= NonceCache.MAX_ENTRIES) {
+      const oldest = this.seen.keys().next().value
+      if (oldest === undefined) break
+      this.seen.delete(oldest)
+    }
   }
 }
 
@@ -169,11 +190,15 @@ export async function verifyIdentityProof(
     )
   }
 
+  // Require did:web specifically. The default resolver also handles did:key,
+  // did:pkh and others; a self-issued did:key proof would verify against its
+  // own embedded key and prove no domain control, so restrict to the method
+  // whose ownership means something here.
   const issuer = payload.iss
-  if (!isDidUri(issuer)) {
+  if (!isDidWebUri(issuer)) {
     throw new IdentityError(
       "identity_invalid",
-      "Identity proof issuer is not a DID",
+      "Identity proof issuer is not a did:web DID",
     )
   }
   const nonce: unknown = payload.nonce

@@ -26,6 +26,7 @@ export const TEST_PAYER = "0x0000000000000000000000000000000000000002"
 export class FakeFacilitatorClient implements FacilitatorClient {
   readonly verifyCalls: PaymentPayload[] = []
   readonly settleCalls: PaymentPayload[] = []
+  getSupportedCalls = 0
 
   verify(
     payload: PaymentPayload,
@@ -49,6 +50,7 @@ export class FakeFacilitatorClient implements FacilitatorClient {
   }
 
   getSupported(): Promise<SupportedResponse> {
+    this.getSupportedCalls += 1
     return Promise.resolve({
       kinds: [{ x402Version: 2, scheme: "exact", network: TEST_NETWORK }],
       extensions: [],

@@ -23,9 +23,12 @@ unreachable for rejected requests.
 The seller receives its `FacilitatorClient` (verify/settle/getSupported) by
 injection. Tests inject a recording fake and assert, for every rejected
 scenario (missing, malformed, expired, mismatched key, wrong audience,
-over-cap, replayed nonce): the response is 401/403 and zero facilitator calls
-were made. The demo scripts wrap the real facilitator in a counting decorator
-and print the counts.
+non-did:web, over-cap, replayed nonce) and for each of those again with a
+payment header present: the response is 401/403 and zero `verify`/`settle`
+calls were made. (`getSupported` is capability discovery: the x402 middleware
+calls it once at startup, never on a request, so it is not part of the
+settlement path.) The demo scripts wrap the real facilitator in a counting
+decorator and print the counts.
 
 ## The identity proof
 
@@ -36,9 +39,12 @@ A did-jwt JWT (ES256K) built with the agentcommercekit libraries:
 ```
 
 The seller resolves `iss` to its did:web document and checks the signature
-against the published keys. "Mismatched identity" means the JWT was signed by
-a key the claimed DID does not publish. The VC/ControllerCredential layer of
-ACK-ID is intentionally out of scope.
+against the published keys. `iss` must be did:web specifically: the default
+resolver also handles did:key and did:pkh, but a self-issued did:key verifies
+against its own embedded key and proves no domain control, so those methods
+are rejected. "Mismatched identity" means the JWT was signed by a key the
+claimed DID does not publish. The VC/ControllerCredential layer of ACK-ID is
+intentionally out of scope.
 
 ## Nonce rules
 
@@ -73,3 +79,28 @@ ledger. The facilitator URL is env-injected (`X402_FACILITATOR_URL`, default
 x402.org); a Catena facilitator would be a config change. The repo consumes
 public surfaces only: agentcommercekit packages, x402 packages, the public
 facilitator, and the sandbox account as the receiving bank.
+
+## Known limitations
+
+Real gaps a production version would close; called out so they are choices,
+not oversights.
+
+- **Identity is not bound to the payer.** The proof says who is asking; the
+  x402 payment says who pays, and the two are independent. An attacker could
+  pair their own valid proof with someone else's unspent EIP-3009
+  authorization, so the victim pays while the receipt names the attacker.
+  Closing this means committing the payer address in the proof and checking it
+  against the settled payer in an x402 verify hook, before settlement.
+- **At-most-once nonce, no settlement reconciliation.** The nonce is consumed
+  when a payment header is present, before the payment is decoded or settled.
+  A garbage payment burns a valid proof (harmless: re-mint), but if settlement
+  succeeds and the response is then lost, retrying the same proof is rejected
+  rather than reconciled, a charge-without-delivery path. Production needs an
+  idempotency key derived from the payment authorization.
+- **did:web resolution is an SSRF surface.** Resolving `iss` fetches a URL
+  before the signature is checked. The resolver forces HTTPS for real domains
+  but allows HTTP to localhost for local development, so a deployment should
+  restrict the allowed hosts and add a fetch timeout and size limit.
+- **Single process.** The nonce cache is in-memory, so replay protection does
+  not hold across replicas or restarts. A shared store (Redis) keyed on the
+  nonce is the production form.
