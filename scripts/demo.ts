@@ -47,8 +47,11 @@ const { app, identity } = await createSeller({
   authorize: createAmountCapAuthorization(config.AUTHORIZATION_MAX_USD)
 })
 
-const server: Server = await new Promise((resolve) => {
+const server: Server = await new Promise((resolve, reject) => {
   const s = app.listen(config.SELLER_PORT, () => resolve(s))
+  // Fail loudly if the port is taken: a stale seller with old config would
+  // otherwise serve the demo silently.
+  s.once("error", reject)
 })
 
 console.log(`Seller:   ${config.sellerBaseUrl} (${identity.did})`)
