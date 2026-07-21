@@ -18,7 +18,7 @@ export type Authorize = (
 ) => Promise<AuthorizationDecision> | AuthorizationDecision
 
 /**
- * AUTHORIZATION STUB — deliberately minimal and injectable.
+ * AUTHORIZATION STUB: deliberately minimal and injectable.
  *
  * This is the single seam where a real authorization system (e.g. the Catena
  * policy engine) would plug in. Per the assignment scope it only does two

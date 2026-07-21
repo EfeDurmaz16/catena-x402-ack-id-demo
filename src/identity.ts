@@ -105,7 +105,7 @@ export interface VerifyProofOptions {
   /**
    * Whether to consume the proof's nonce. The x402 flow sends the same proof
    * twice (the unpaid request that earns the 402 challenge, then the paid
-   * retry), so the nonce is only consumed on requests that carry a payment —
+   * retry), so the nonce is only consumed on requests that carry a payment -
    * the ones that can reach settlement.
    */
   consumeNonce?: boolean

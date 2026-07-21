@@ -83,7 +83,7 @@ export async function createSeller(options: SellerOptions): Promise<Seller> {
     res.json({ status: "ok", did: identity.did })
   })
 
-  // 1 + 2: identity, then authorization — both strictly before payment
+  // 1 + 2: identity, then authorization: both strictly before payment
   const identityGate: RequestHandler = async (req, res, next) => {
     try {
       // Only payment-bearing requests can reach settlement, so only they
@@ -121,7 +121,7 @@ export async function createSeller(options: SellerOptions): Promise<Seller> {
   }
   app.use(PROTECTED_PATH, identityGate)
 
-  // 3: x402 payment — only reachable with a verified, authorized identity
+  // 3: x402 payment: only reachable with a verified, authorized identity
   const resourceServer = new x402ResourceServer(facilitatorClient).register(
     network as Network,
     new ExactEvmScheme()
