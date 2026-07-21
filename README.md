@@ -4,6 +4,8 @@ Reference demo of **identity-gated agentic payments**: an [x402](https://github.
 
 The one-sentence pitch: *no verified identity, no payment*. The tests prove the settlement adapter is never even invoked for rejected identities.
 
+**Demo:** a 37-second reel of a real run is in [media/demo.mp4](media/demo.mp4). A per-page code-review notebook of the whole change is at [v1.efebarandurmaz.com](https://v1.efebarandurmaz.com).
+
 ```
 Buyer                              Seller
   |  GET /api/premium                 |
