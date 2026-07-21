@@ -3,6 +3,12 @@ import { loadConfig } from "../config.js"
 import { createAmountCapAuthorization } from "./authorization.js"
 import { createSeller } from "./server.js"
 
+try {
+  process.loadEnvFile()
+} catch {
+  // no .env file; environment variables may be set directly
+}
+
 const config = loadConfig()
 
 if (!config.SELLER_PAY_TO_ADDRESS) {
