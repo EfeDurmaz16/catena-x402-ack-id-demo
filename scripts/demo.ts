@@ -1,0 +1,102 @@
+/**
+ * Scripted demo runner. Usage: tsx scripts/demo.ts <scenario>
+ * Scenarios: valid | missing-identity | mismatched-identity | expired-identity
+ *
+ * Starts the seller in-process, runs the scripted buyer against it, prints
+ * the outcome and the settlement-adapter call counts, and exits non-zero if
+ * the scenario did not behave as required.
+ */
+import { HTTPFacilitatorClient } from "@x402/core/server"
+import { isScenario, runBuyer, SCENARIOS } from "../src/buyer/buyer.js"
+import { loadConfig } from "../src/config.js"
+import { CountingFacilitatorClient } from "../src/counting-facilitator.js"
+import { createAmountCapAuthorization } from "../src/seller/authorization.js"
+import { createSeller } from "../src/seller/server.js"
+import type { Server } from "node:http"
+
+try {
+  process.loadEnvFile()
+} catch {
+  // no .env file; environment variables may be set directly
+}
+
+const scenarioArg = process.argv[2] ?? ""
+if (!isScenario(scenarioArg)) {
+  console.error(`Usage: demo.ts <${SCENARIOS.join(" | ")}>`)
+  process.exit(2)
+}
+const scenario = scenarioArg
+
+const config = loadConfig()
+// Rejected-identity scenarios never reach payment, so they run without a
+// funded wallet or a real pay-to address.
+const payTo =
+  config.SELLER_PAY_TO_ADDRESS ??
+  "0x0000000000000000000000000000000000000001"
+
+const facilitator = new CountingFacilitatorClient(
+  new HTTPFacilitatorClient({ url: config.X402_FACILITATOR_URL })
+)
+
+const { app, identity } = await createSeller({
+  baseUrl: config.sellerBaseUrl,
+  network: config.X402_NETWORK,
+  payTo,
+  price: config.ENDPOINT_PRICE_USD,
+  facilitatorClient: facilitator,
+  authorize: createAmountCapAuthorization(config.AUTHORIZATION_MAX_USD)
+})
+
+const server: Server = await new Promise((resolve) => {
+  const s = app.listen(config.SELLER_PORT, () => resolve(s))
+})
+
+console.log(`Seller:   ${config.sellerBaseUrl} (${identity.did})`)
+console.log(`Network:  ${config.X402_NETWORK}, price ${config.ENDPOINT_PRICE_USD}`)
+console.log(`Scenario: ${scenario}\n`)
+
+try {
+  const result = await runBuyer(scenario, {
+    sellerUrl: config.sellerBaseUrl,
+    sellerDid: identity.did,
+    didPort: config.BUYER_DID_PORT,
+    ...(config.BUYER_EVM_PRIVATE_KEY
+      ? { evmPrivateKey: config.BUYER_EVM_PRIVATE_KEY as `0x${string}` }
+      : {})
+  })
+
+  console.log(`Buyer DID:    ${result.buyerDid}`)
+  console.log(`HTTP status:  ${result.status}`)
+  console.log(`Response:     ${JSON.stringify(result.body)}`)
+  if (result.settlement) {
+    console.log(`Settlement:   success=${result.settlement.success}`)
+    console.log(`Transaction:  ${result.settlement.transaction}`)
+    console.log(
+      `Explorer:     https://sepolia.basescan.org/tx/${result.settlement.transaction}`
+    )
+  }
+  console.log(
+    `\nSettlement adapter calls: verify=${facilitator.verifyCalls} settle=${facilitator.settleCalls}`
+  )
+
+  const ok =
+    scenario === "valid"
+      ? result.status === 200 && result.settlement?.success === true
+      : result.status >= 401 &&
+        result.status <= 403 &&
+        facilitator.verifyCalls === 0 &&
+        facilitator.settleCalls === 0
+
+  if (ok) {
+    console.log(
+      scenario === "valid"
+        ? "\nPASS: identity verified, payment settled, resource delivered."
+        : "\nPASS: identity rejected before any payment; settlement adapter never invoked."
+    )
+  } else {
+    console.error("\nFAIL: scenario did not behave as required.")
+    process.exitCode = 1
+  }
+} finally {
+  server.close()
+}
