@@ -4,7 +4,7 @@ Reference demo of **identity-gated agentic payments**: an [x402](https://github.
 
 The one-sentence pitch: *no verified identity, no payment*. The tests prove the settlement adapter is never even invoked for rejected identities.
 
-**Demo:** a 37-second reel of a real run is in [media/demo.mp4](media/demo.mp4). A per-page code-review notebook of the whole change is at [v1.efebarandurmaz.com](https://v1.efebarandurmaz.com).
+**Demo:** [media/demo.mp4](media/demo.mp4) is a short recording of two real runs (rejected identity, then a valid one that settles USDC on Base Sepolia into a Catena sandbox account) — real terminal output, the live review notebook, and the actual on-chain transaction on BaseScan. A per-page code-review notebook of the whole change is at [v1.efebarandurmaz.com](https://v1.efebarandurmaz.com).
 
 ```
 Buyer                              Seller
