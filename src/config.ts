@@ -27,8 +27,6 @@ const envSchema = z.object({
   AUTHORIZATION_MAX_USD: z.string().regex(/^\$\d+(\.\d+)?$/).default("$0.05")
 })
 
-export type Config = ReturnType<typeof loadConfig>
-
 export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   const parsed = envSchema.parse(env)
   return {
