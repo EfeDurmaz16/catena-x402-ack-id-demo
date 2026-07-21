@@ -1,11 +1,12 @@
-import { getDidResolver } from "@agentcommercekit/did"
 import { ExactEvmScheme } from "@x402/evm/exact/server"
 import { paymentMiddleware, x402ResourceServer } from "@x402/express"
 import express from "express"
 import {
   createIdentity,
+  createSellerResolver,
   IdentityError,
   NonceCache,
+  readBoundPaymentAddress,
   verifyIdentityProof,
 } from "../identity.js"
 import type { Identity } from "../identity.js"
@@ -64,6 +65,28 @@ function hasHeader(value: string | string[] | undefined): boolean {
   return value !== undefined && value.length > 0
 }
 
+/** Minimal read-only view of the x402 hook's transport context. */
+interface X402Transport {
+  request?: { adapter?: { getHeader(name: string): string | undefined } }
+}
+
+/** The proof bound to the request that reached the payment layer. */
+function boundPaymentAddress(transportContext: unknown): string | undefined {
+  const header = (
+    transportContext as X402Transport | undefined
+  )?.request?.adapter?.getHeader("authorization")
+  if (!header?.startsWith("Bearer ")) return undefined
+  return readBoundPaymentAddress(header.slice("Bearer ".length))
+}
+
+/** The wallet that signed the x402 payment (EIP-3009 `from`). */
+function paymentPayer(paymentPayload: unknown): string | undefined {
+  const payload = (paymentPayload as { payload?: unknown } | undefined)?.payload
+  const from = (payload as { authorization?: { from?: unknown } } | undefined)
+    ?.authorization?.from
+  return typeof from === "string" ? from : undefined
+}
+
 /**
  * Build the seller Express app. Middleware order is the security invariant:
  *
@@ -83,7 +106,7 @@ export async function createSeller(options: SellerOptions): Promise<Seller> {
     price,
     facilitatorClient,
     authorize,
-    resolver = getDidResolver(),
+    resolver = createSellerResolver(),
   } = options
 
   const identity = await createIdentity(baseUrl)
@@ -144,11 +167,27 @@ export async function createSeller(options: SellerOptions): Promise<Seller> {
   }
   app.use(PROTECTED_PATH, identityGate)
 
-  // 3: x402 payment: only reachable with a verified, authorized identity
-  const resourceServer = new x402ResourceServer(facilitatorClient).register(
-    network,
-    new ExactEvmScheme(),
-  )
+  // 3: x402 payment: only reachable with a verified, authorized identity.
+  // onAfterVerify runs once the facilitator has verified the payment but
+  // before it settles, so aborting here rejects the request without moving
+  // money. It binds identity to payment: the wallet that signed the payment
+  // must be the one the proof committed to. Without this, an attacker could
+  // pair their own valid proof with someone else's payment authorization.
+  const resourceServer = new x402ResourceServer(facilitatorClient)
+    .register(network, new ExactEvmScheme())
+    .onAfterVerify((ctx) => {
+      const bound = boundPaymentAddress(ctx.transportContext)?.toLowerCase()
+      const payer = paymentPayer(ctx.paymentPayload)?.toLowerCase()
+      if (bound === undefined || payer === undefined || bound !== payer) {
+        return Promise.resolve({
+          abort: true as const,
+          reason: "identity_payer_mismatch",
+          message:
+            "Payment wallet is not the address bound in the identity proof",
+        })
+      }
+      return Promise.resolve()
+    })
   app.use(
     paymentMiddleware(
       {

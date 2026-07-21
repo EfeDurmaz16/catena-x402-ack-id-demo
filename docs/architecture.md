@@ -46,6 +46,20 @@ are rejected. "Mismatched identity" means the JWT was signed by a key the
 claimed DID does not publish. The VC/ControllerCredential layer of ACK-ID is
 intentionally out of scope.
 
+The proof also binds the wallet that pays: a `paymentAddress` claim naming the
+buyer's EVM address.
+
+## Binding identity to the payer
+
+Verifying who is asking is not enough if anyone's payment can satisfy it. The
+proof commits to a `paymentAddress`, and an `onAfterVerify` hook on the x402
+resource server compares it to the wallet that actually signed the payment
+(the EIP-3009 `from`). The hook runs after the facilitator verifies the
+payment but before it settles, so a mismatch is rejected without moving money.
+This closes the attack of pairing a valid identity proof with someone else's
+payment authorization: the authenticated identity must control the paying
+wallet.
+
 ## Nonce rules
 
 x402 sends the same proof twice: an unpaid request that earns the 402, then a
@@ -85,22 +99,15 @@ facilitator, and the sandbox account as the receiving bank.
 Real gaps a production version would close; called out so they are choices,
 not oversights.
 
-- **Identity is not bound to the payer.** The proof says who is asking; the
-  x402 payment says who pays, and the two are independent. An attacker could
-  pair their own valid proof with someone else's unspent EIP-3009
-  authorization, so the victim pays while the receipt names the attacker.
-  Closing this means committing the payer address in the proof and checking it
-  against the settled payer in an x402 verify hook, before settlement.
 - **At-most-once nonce, no settlement reconciliation.** The nonce is consumed
   when a payment header is present, before the payment is decoded or settled.
   A garbage payment burns a valid proof (harmless: re-mint), but if settlement
   succeeds and the response is then lost, retrying the same proof is rejected
   rather than reconciled, a charge-without-delivery path. Production needs an
   idempotency key derived from the payment authorization.
-- **did:web resolution is an SSRF surface.** Resolving `iss` fetches a URL
-  before the signature is checked. The resolver forces HTTPS for real domains
-  but allows HTTP to localhost for local development, so a deployment should
-  restrict the allowed hosts and add a fetch timeout and size limit.
 - **Single process.** The nonce cache is in-memory, so replay protection does
   not hold across replicas or restarts. A shared store (Redis) keyed on the
   nonce is the production form.
+- **did:web response size.** Resolution fetches with a timeout and allows HTTP
+  only for local hosts (`createSellerResolver`), but does not cap the response
+  body; a production resolver would stream and bound it.

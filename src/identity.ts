@@ -15,6 +15,22 @@ export interface Identity {
   keypair: Keypair
 }
 
+/**
+ * DID resolver for the seller. did:web resolution fetches the URL named in the
+ * proof before the signature is checked, so bound the fetch: a hostile or dead
+ * host cannot hang the seller, and HTTP is allowed only for local hosts.
+ * ponytail: a response-size cap would need body streaming; left for production.
+ */
+export function createSellerResolver(timeoutMs = 5000): DidResolver {
+  return getDidResolver({
+    webOptions: {
+      allowedHttpHosts: ["localhost", "127.0.0.1", "0.0.0.0"],
+      fetch: (input, init) =>
+        fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) }),
+    },
+  })
+}
+
 /** Generate a fresh secp256k1 keypair and its did:web document for `baseUrl`. */
 export async function createIdentity(baseUrl: string): Promise<Identity> {
   const keypair = await generateKeypair("secp256k1")
@@ -32,26 +48,60 @@ export interface CreateProofOptions {
   keypair: Keypair
   /** Intended recipient (`aud`), the seller's DID. */
   audience: string
+  /** EVM wallet the buyer will pay from; binds identity to the payer. */
+  paymentAddress?: string
   /** Seconds until expiry. Negative produces an already-expired proof. */
   expiresInSeconds?: number
 }
 
 /**
- * Sign an ACK-ID identity proof: a did-jwt JWT with iss/aud/nonce/exp,
- * verifiable against the key published in the issuer's did:web document.
+ * Sign an ACK-ID identity proof: a did-jwt JWT with iss/aud/nonce/exp and an
+ * optional bound payment address, verifiable against the key published in the
+ * issuer's did:web document.
  */
 export async function createIdentityProof(
   options: CreateProofOptions,
 ): Promise<string> {
-  const { issuerDid, keypair, audience, expiresInSeconds = 300 } = options
+  const {
+    issuerDid,
+    keypair,
+    audience,
+    paymentAddress,
+    expiresInSeconds = 300,
+  } = options
   return createJwt(
-    { aud: audience, nonce: randomUUID() },
+    {
+      aud: audience,
+      nonce: randomUUID(),
+      ...(paymentAddress ? { paymentAddress } : {}),
+    },
     {
       issuer: issuerDid,
       signer: createJwtSigner(keypair),
       expiresIn: expiresInSeconds,
     },
   )
+}
+
+/**
+ * Read the `paymentAddress` claim from a proof WITHOUT re-checking its
+ * signature. Only safe once the identity gate has verified this exact token on
+ * the same request: the seller's payment hook uses it to bind the payer to the
+ * authenticated identity. Returns undefined if absent or malformed.
+ */
+export function readBoundPaymentAddress(jwt: string): string | undefined {
+  try {
+    const segment = jwt.split(".")[1]
+    if (!segment) return undefined
+    const claims = JSON.parse(
+      Buffer.from(segment, "base64url").toString("utf8"),
+    ) as { paymentAddress?: unknown }
+    return typeof claims.paymentAddress === "string"
+      ? claims.paymentAddress
+      : undefined
+  } catch {
+    return undefined
+  }
 }
 
 export type IdentityRejectionCode =

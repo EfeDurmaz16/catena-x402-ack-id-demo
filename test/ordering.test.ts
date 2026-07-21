@@ -153,6 +153,23 @@ describe("identity-before-payment ordering", () => {
     expect(seller.facilitator.settleCalls).toHaveLength(0)
   })
 
+  it("identity-payer binding: proof bound to another wallet is rejected after verify, before settle", async () => {
+    // Models the attack: a valid identity proof paired with a payment from a
+    // wallet the proof did not commit to. The facilitator verifies the payment
+    // (verify=1), but the seller aborts before settle (settle=0): no money moves.
+    seller = await startTestSeller()
+    const result = await runBuyer("valid", {
+      sellerUrl: seller.url,
+      sellerDid: seller.identity.did,
+      evmPrivateKey: TEST_PRIVATE_KEY,
+      bindPaymentAddress: "0x000000000000000000000000000000000000dEaD",
+    })
+    expect(result.status).not.toBe(200)
+    expect(result.settlement?.success).not.toBe(true)
+    expect(seller.facilitator.verifyCalls).toHaveLength(1)
+    expect(seller.facilitator.settleCalls).toHaveLength(0)
+  })
+
   it("authorization stub: valid identity but price over cap is denied before payment", async () => {
     seller = await startTestSeller({
       price: "$0.10", // over the $0.05 default cap

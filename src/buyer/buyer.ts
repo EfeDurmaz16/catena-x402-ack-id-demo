@@ -36,6 +36,11 @@ export interface BuyerOptions {
   didPort?: number
   /** Funded Base Sepolia key. Required only for the "valid" scenario. */
   evmPrivateKey?: `0x${string}`
+  /**
+   * Bind a different wallet in the proof than the one that pays. Test-only, to
+   * model the attack the identity-to-payer binding defends against.
+   */
+  bindPaymentAddress?: string
 }
 
 export interface BuyerRunResult {
@@ -56,7 +61,13 @@ export async function runBuyer(
   scenario: Scenario,
   options: BuyerOptions,
 ): Promise<BuyerRunResult> {
-  const { sellerUrl, sellerDid, didPort = 0, evmPrivateKey } = options
+  const {
+    sellerUrl,
+    sellerDid,
+    didPort = 0,
+    evmPrivateKey,
+    bindPaymentAddress,
+  } = options
   if (scenario === "valid" && !evmPrivateKey) {
     throw new Error(
       "evmPrivateKey is required for the valid scenario: it signs the USDC payment (the demo reads it from BUYER_EVM_PRIVATE_KEY)",
@@ -68,6 +79,11 @@ export async function runBuyer(
     const identity = await createIdentity(didHost.baseUrl)
     didHost.setDocument(identity.didDocument)
 
+    // The proof binds the wallet that will pay, so the seller can check the
+    // authenticated identity actually controls the paying wallet.
+    const signer = privateKeyToAccount(evmPrivateKey ?? UNUSED_PRIVATE_KEY)
+    const paymentAddress = bindPaymentAddress ?? signer.address
+
     let proof: string | undefined
     switch (scenario) {
       case "valid":
@@ -75,6 +91,7 @@ export async function runBuyer(
           issuerDid: identity.did,
           keypair: identity.keypair,
           audience: sellerDid,
+          paymentAddress,
         })
         break
       case "missing-identity":
@@ -88,6 +105,7 @@ export async function runBuyer(
           issuerDid: identity.did,
           keypair: rogueKeypair,
           audience: sellerDid,
+          paymentAddress,
         })
         break
       }
@@ -96,12 +114,12 @@ export async function runBuyer(
           issuerDid: identity.did,
           keypair: identity.keypair,
           audience: sellerDid,
+          paymentAddress,
           expiresInSeconds: -600,
         })
         break
     }
 
-    const signer = privateKeyToAccount(evmPrivateKey ?? UNUSED_PRIVATE_KEY)
     const client = new x402Client().register(
       "eip155:*",
       new ExactEvmScheme(signer),
