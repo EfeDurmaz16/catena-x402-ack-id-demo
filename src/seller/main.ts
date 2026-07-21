@@ -1,7 +1,7 @@
 import { HTTPFacilitatorClient } from "@x402/core/server"
 import { loadConfig } from "../config.js"
 import { createAmountCapAuthorization } from "./authorization.js"
-import { createSeller } from "./server.js"
+import { createSeller, PROTECTED_PATH } from "./server.js"
 
 try {
   process.loadEnvFile()
@@ -22,13 +22,15 @@ const { app, identity } = await createSeller({
   payTo: config.SELLER_PAY_TO_ADDRESS,
   price: config.ENDPOINT_PRICE_USD,
   facilitatorClient: new HTTPFacilitatorClient({
-    url: config.X402_FACILITATOR_URL
+    url: config.X402_FACILITATOR_URL,
   }),
-  authorize: createAmountCapAuthorization(config.AUTHORIZATION_MAX_USD)
+  authorize: createAmountCapAuthorization(config.AUTHORIZATION_MAX_USD),
 })
 
 app.listen(config.SELLER_PORT, () => {
   console.log(`Seller listening on ${config.sellerBaseUrl}`)
   console.log(`Seller DID: ${identity.did}`)
-  console.log(`Protected endpoint: GET ${config.sellerBaseUrl}/api/premium`)
+  console.log(
+    `Protected endpoint: GET ${config.sellerBaseUrl}${PROTECTED_PATH}`,
+  )
 })

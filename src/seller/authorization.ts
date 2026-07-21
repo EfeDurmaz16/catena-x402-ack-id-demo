@@ -14,7 +14,7 @@ export interface AuthorizationDecision {
 }
 
 export type Authorize = (
-  request: AuthorizationRequest
+  request: AuthorizationRequest,
 ) => Promise<AuthorizationDecision> | AuthorizationDecision
 
 /**
@@ -32,7 +32,7 @@ export function createAmountCapAuthorization(maxPrice: string): Authorize {
     if (priceMicros > capMicros) {
       return {
         allowed: false,
-        reason: `Price ${price} exceeds the per-request cap ${maxPrice} for ${did}`
+        reason: `Price ${price} exceeds the per-request cap ${maxPrice} for ${did}`,
       }
     }
     return { allowed: true }

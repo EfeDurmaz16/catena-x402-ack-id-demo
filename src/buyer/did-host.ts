@@ -3,7 +3,6 @@ import type { DidDocument } from "@agentcommercekit/did"
 import type { Server } from "node:http"
 
 export interface DidHost {
-  port: number
   baseUrl: string
   setDocument: (document: DidDocument) => void
   close: () => Promise<void>
@@ -36,15 +35,16 @@ export function startDidHost(port = 0): Promise<DidHost> {
         return
       }
       resolve({
-        port: address.port,
         baseUrl: `http://localhost:${address.port}`,
         setDocument: (doc) => {
           document = doc
         },
         close: () =>
           new Promise((res) => {
-            server.close(() => res())
-          })
+            server.close(() => {
+              res()
+            })
+          }),
       })
     })
   })

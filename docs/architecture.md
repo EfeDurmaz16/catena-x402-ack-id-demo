@@ -1,121 +1,75 @@
-# Architecture note: identity before payment
+# Architecture: identity before payment
 
 ## The invariant
 
-A request may only reach payment/settlement logic after its ACK-ID identity
-proof has been verified and the authorization stub has approved it. The
-enforcement is structural, not conventional: Express middleware order.
+A request reaches payment logic only after its identity proof is verified and
+the authorization stub approves it. Enforcement is Express middleware order,
+not convention:
 
 ```
 GET /api/premium
-  └─ 1. identityGate            (src/seller/server.ts)
-        - resolve iss (did:web) via @agentcommercekit/did
-        - verify JWT signature against the DID document's published keys
-        - check aud == seller DID, exp, nonce single-use (payment-bearing
-          requests only; see below)
-        - on failure: respond 401/403, return. next() is never called.
-  └─ 2. authorization stub      (src/seller/authorization.ts)
-        - DID already verified upstream + per-request amount cap
-        - single injectable function; the seam where a real authorization
-          system (e.g. Catena's policy engine) would plug in
-  └─ 3. x402 paymentMiddleware  (@x402/express)
-        - no payment header -> 402 challenge (PAYMENT-REQUIRED)
-        - payment header    -> facilitator verify + settle, then next()
-  └─ 4. protected handler
+  1. identityGate        resolve iss (did:web), verify JWT signature against
+                         the DID document, check aud, exp, nonce
+  2. authorization stub  verified DID + amount cap; single injectable function
+  3. x402 middleware     402 challenge, then facilitator verify + settle
+  4. protected handler
 ```
 
-Steps 3 and 4 are only reachable through `next()` calls in 1 and 2. Every
-rejection path in 1-2 ends the response without calling `next()`, so a
-rejected request cannot invoke the facilitator.
+Every rejection in 1-2 ends the response without calling `next()`, so 3-4 are
+unreachable for rejected requests.
 
-## How this is proven, not just asserted
+## Proven, not asserted
 
-The seller receives its `FacilitatorClient` (the settlement adapter:
-`verify`/`settle`/`getSupported`) by constructor injection.
-`test/ordering.test.ts` injects a recording fake and asserts, for every
-rejected-identity scenario (missing, malformed, expired, mismatched key,
-wrong audience, over-cap, replayed nonce):
-
-- the response is 401/403 with a stable error code, and
-- `verifyCalls` and `settleCalls` are both empty.
-
-The demo scripts wrap the *real* HTTP facilitator in the same counting
-decorator and print the counts, so the property is visible in live runs too.
+The seller receives its `FacilitatorClient` (verify/settle/getSupported) by
+injection. Tests inject a recording fake and assert, for every rejected
+scenario (missing, malformed, expired, mismatched key, wrong audience,
+over-cap, replayed nonce): the response is 401/403 and zero facilitator calls
+were made. The demo scripts wrap the real facilitator in a counting decorator
+and print the counts.
 
 ## The identity proof
 
-A plain did-jwt JWT (ES256K), created and verified with the public Agent
-Commerce Kit libraries (`@agentcommercekit/did`, `jwt`, `keys`):
+A did-jwt JWT (ES256K) built with the agentcommercekit libraries:
 
 ```
-{ iss: <buyer did:web>, aud: <seller did:web>, nonce: <uuid>, exp: now+300s, iat }
+{ iss: <buyer did:web>, aud: <seller did:web>, nonce: <uuid>, exp: now+300s }
 ```
 
-Verification resolves `iss` to its did:web document (served at
-`/.well-known/did.json`) and checks the signature against the published
-verification keys. "Mismatched identity" is exactly the case where the JWT is
-signed by a key the claimed DID does not publish: an attacker asserting an
-identity they do not control.
+The seller resolves `iss` to its did:web document and checks the signature
+against the published keys. "Mismatched identity" means the JWT was signed by
+a key the claimed DID does not publish. The VC/ControllerCredential layer of
+ACK-ID is intentionally out of scope.
 
-Deliberately out of scope: ACK-ID's ControllerCredential/VC layer (agent-to-
-owner ownership chains). It adds an A2A dependency without changing the
-identity-before-payment story this demo exists to show.
+## Nonce rules
 
-### Nonce semantics under x402
+x402 sends the same proof twice: an unpaid request that earns the 402, then a
+paid retry. Only payment-bearing requests consume the nonce; a second paid use
+is rejected 403 before the payment layer. Two hardening rules (see
+`JWT_SKEW_SECONDS`, `MAX_PROOF_LIFETIME_SECONDS` in `src/identity.ts`):
 
-x402 sends the same request twice: an unpaid request that earns the 402
-challenge, then a paid retry carrying `PAYMENT-SIGNATURE`. Both carry the same
-identity proof. The nonce is therefore consumed only by payment-bearing
-requests: the ones that can reach settlement. Unpaid requests verify the
-proof but leave the nonce intact; replaying a proof on a second
-payment-bearing request is rejected (403 `identity_replayed`) before the
-payment layer. The replay cache is in-memory (single-instance demo scope).
+- A proof must carry a bounded `exp`. did-jwt skips its expiry check when
+  `exp` is absent, so a non-expiring proof would verify forever and its nonce
+  entry would never be pruned.
+- The nonce is reserved until `exp` plus did-jwt's ~300s clock skew. A shorter
+  reservation would be pruned while the proof still verifies.
 
-Two hardening rules make "nonce single-use" hold against a hostile buyer, not
-just the scripted one. First, a proof must carry a bounded `exp`: did-jwt
-skips its expiry check when `exp` is absent, so a non-expiring proof would
-verify forever and its nonce entry would never be pruned (a memory-growth
-vector); proofs with no `exp`, or an `exp` further out than a fixed cap, are
-rejected. Second, the nonce entry is reserved until `exp` plus did-jwt's clock
-skew, not just `exp`: did-jwt keeps accepting a token for ~300s past its
-expiry, and a shorter reservation would prune the entry while the proof still
-verifies, opening a replay window. See `JWT_SKEW_SECONDS` and
-`MAX_PROOF_LIFETIME_SECONDS` in `src/identity.ts`.
-
-Residual, documented limitation: the nonce is consumed on the presence of a
-payment header, not on a validated payment, so an attacker who has captured a
-victim's still-unspent proof (only possible without TLS) could burn its nonce
-with a junk payment header, forcing the victim to mint a fresh proof. No money
-moves and no protected result is served; the cost is a re-mint. Consuming only
-after settlement would couple the gate to x402 internals, which this demo
-deliberately avoids.
+Known limit: the nonce is consumed on payment-header presence, not on a
+validated payment. An attacker who captures an unspent proof (requires no TLS)
+can burn its nonce; no money moves, the victim re-mints. The cache is
+in-memory, single-instance scope.
 
 ## Payment leg
 
-x402 protocol v2 (`@x402/*` 2.19.0), `exact` scheme on `eip155:84532`
-(Base Sepolia), USDC `0x036CbD53842c5426634e7929541eC2318f3dCF7e` (Circle's
-canonical testnet deployment). The buyer signs an EIP-3009
-`transferWithAuthorization` (EIP-712, gasless); the facilitator verifies and
-settles on-chain and the seller returns the protected result with the
-settlement transaction in `PAYMENT-RESPONSE`.
+x402 v2 (`@x402/*` 2.19.0), `exact` scheme, network `eip155:84532`, USDC
+`0x036CbD53842c5426634e7929541eC2318f3dCF7e`. The buyer signs a gasless
+EIP-3009 `transferWithAuthorization`; the facilitator settles on-chain and the
+response carries the transaction in `PAYMENT-RESPONSE`.
 
-## Catena integration surface
+## Catena surface
 
-Catena's public surfaces used by this demo: the Agent Commerce Kit libraries
-(identity leg), and the Catena sandbox account as the seller's bank. Set the
-seller's `payTo` to the sandbox account's base-sepolia USDC deposit address
-(Catena console) and the x402 settlement lands in a Catena-governed account,
-observable through Catena's account and transaction reads. The repo stays a
-pure consumer of public surfaces.
-
-The settlement adapter remains the seam for deeper integration: the
-facilitator URL is env-injected (`X402_FACILITATOR_URL`, defaulting to the
-public x402 testnet facilitator, since Catena does not operate a public
-x402 facilitator today) and the seller depends only on the
-`FacilitatorClient` interface, so a Catena facilitator endpoint would be a
-config change, not a code change.
-
-Known gap (as of 2026-07-21): Catena's CLI x402 payer cannot attach custom
-request headers, so it cannot carry an ACK-ID identity proof in this flow;
-the buyer therefore signs x402 payments with its own wallet key while the
-seller settles into its Catena account.
+The seller's `payTo` is a Catena sandbox account's base-sepolia USDC deposit
+address, so settlement lands in a Catena-governed account and shows up in its
+ledger. The facilitator URL is env-injected (`X402_FACILITATOR_URL`, default
+x402.org); a Catena facilitator would be a config change. The repo consumes
+public surfaces only: agentcommercekit packages, x402 packages, the public
+facilitator, and the sandbox account as the receiving bank.

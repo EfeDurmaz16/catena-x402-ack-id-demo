@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import {
   createDidWebDocumentFromKeypair,
   getDidResolver,
-  isDidUri
+  isDidUri,
 } from "@agentcommercekit/did"
 import { createJwt, createJwtSigner, verifyJwt } from "@agentcommercekit/jwt"
 import { generateKeypair } from "@agentcommercekit/keys"
@@ -20,7 +20,7 @@ export async function createIdentity(baseUrl: string): Promise<Identity> {
   const keypair = await generateKeypair("secp256k1")
   const { did, didDocument } = createDidWebDocumentFromKeypair({
     keypair,
-    baseUrl
+    baseUrl,
   })
   return { did, didDocument, keypair }
 }
@@ -41,7 +41,7 @@ export interface CreateProofOptions {
  * verifiable against the key published in the issuer's did:web document.
  */
 export async function createIdentityProof(
-  options: CreateProofOptions
+  options: CreateProofOptions,
 ): Promise<string> {
   const { issuerDid, keypair, audience, expiresInSeconds = 300 } = options
   return createJwt(
@@ -49,8 +49,8 @@ export async function createIdentityProof(
     {
       issuer: issuerDid,
       signer: createJwtSigner(keypair),
-      expiresIn: expiresInSeconds
-    }
+      expiresIn: expiresInSeconds,
+    },
   )
 }
 
@@ -99,16 +99,16 @@ const MAX_PROOF_LIFETIME_SECONDS = 900
  * seller ever runs more than one instance.
  */
 export class NonceCache {
-  #seen = new Map<string, number>()
+  private readonly seen = new Map<string, number>()
 
   /** Returns false if the nonce was already used and has not expired. */
   markUsed(nonce: string, expiresAtMs: number): boolean {
     const now = Date.now()
-    for (const [key, expiry] of this.#seen) {
-      if (expiry <= now) this.#seen.delete(key)
+    for (const [key, expiry] of this.seen) {
+      if (expiry <= now) this.seen.delete(key)
     }
-    if (this.#seen.has(nonce)) return false
-    this.#seen.set(nonce, expiresAtMs)
+    if (this.seen.has(nonce)) return false
+    this.seen.set(nonce, expiresAtMs)
     return true
   }
 }
@@ -139,13 +139,13 @@ export interface VerifiedIdentity {
  */
 export async function verifyIdentityProof(
   jwt: string | undefined,
-  options: VerifyProofOptions
+  options: VerifyProofOptions,
 ): Promise<VerifiedIdentity> {
   const {
     audience,
     resolver = getDidResolver(),
     nonceCache,
-    consumeNonce = true
+    consumeNonce = true,
   } = options
   if (!jwt) {
     throw new IdentityError("identity_missing", "No identity proof provided")
@@ -165,7 +165,7 @@ export async function verifyIdentityProof(
   if (payload.aud !== audience) {
     throw new IdentityError(
       "identity_mismatched",
-      "Identity proof was issued for a different audience"
+      "Identity proof was issued for a different audience",
     )
   }
 
@@ -173,14 +173,14 @@ export async function verifyIdentityProof(
   if (!isDidUri(issuer)) {
     throw new IdentityError(
       "identity_invalid",
-      "Identity proof issuer is not a DID"
+      "Identity proof issuer is not a DID",
     )
   }
-  const nonce = payload.nonce
+  const nonce: unknown = payload.nonce
   if (typeof nonce !== "string" || nonce.length === 0) {
     throw new IdentityError(
       "identity_invalid",
-      "Identity proof is missing a nonce"
+      "Identity proof is missing a nonce",
     )
   }
 
@@ -191,14 +191,14 @@ export async function verifyIdentityProof(
   if (typeof exp !== "number") {
     throw new IdentityError(
       "identity_invalid",
-      "Identity proof must carry an expiry (exp)"
+      "Identity proof must carry an expiry (exp)",
     )
   }
   const nowSeconds = Math.floor(Date.now() / 1000)
   if (exp > nowSeconds + MAX_PROOF_LIFETIME_SECONDS) {
     throw new IdentityError(
       "identity_invalid",
-      "Identity proof expiry is too far in the future"
+      "Identity proof expiry is too far in the future",
     )
   }
 
@@ -210,13 +210,17 @@ export async function verifyIdentityProof(
     if (!nonceCache.markUsed(nonce, expiresAtMs)) {
       throw new IdentityError(
         "identity_replayed",
-        "Identity proof nonce was already used"
+        "Identity proof nonce was already used",
       )
     }
   }
   return { did: issuer, nonce }
 }
 
+// did-jwt reports failures only as message strings (no typed error codes),
+// so substring matching is the only classification available. If a did-jwt
+// upgrade rewords a message, the proof still lands in identity_invalid/401:
+// classification degrades fail-closed, never into acceptance.
 function classifyVerificationError(error: unknown): IdentityError {
   const message = error instanceof Error ? error.message : String(error)
   if (message.includes("expired")) {
@@ -229,17 +233,17 @@ function classifyVerificationError(error: unknown): IdentityError {
   ) {
     return new IdentityError(
       "identity_mismatched",
-      "Identity proof signature does not match the claimed DID's published keys"
+      "Identity proof signature does not match the claimed DID's published keys",
     )
   }
   if (message.includes("audience")) {
     return new IdentityError(
       "identity_mismatched",
-      "Identity proof was issued for a different audience"
+      "Identity proof was issued for a different audience",
     )
   }
   return new IdentityError(
     "identity_invalid",
-    `Identity proof could not be verified: ${message}`
+    `Identity proof could not be verified: ${message}`,
   )
 }

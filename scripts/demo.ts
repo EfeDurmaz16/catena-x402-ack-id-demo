@@ -28,14 +28,18 @@ if (!isScenario(scenarioArg)) {
 const scenario = scenarioArg
 
 const config = loadConfig()
-// Rejected-identity scenarios never reach payment, so they run without a
-// funded wallet or a real pay-to address.
+// The valid scenario settles real testnet USDC; refuse to burn it to a
+// placeholder address. Rejected-identity scenarios never reach payment, so
+// they run without a funded wallet or a real pay-to address.
+if (scenario === "valid" && !config.SELLER_PAY_TO_ADDRESS) {
+  console.error("SELLER_PAY_TO_ADDRESS is required for the valid scenario")
+  process.exit(2)
+}
 const payTo =
-  config.SELLER_PAY_TO_ADDRESS ??
-  "0x0000000000000000000000000000000000000001"
+  config.SELLER_PAY_TO_ADDRESS ?? "0x0000000000000000000000000000000000000001"
 
 const facilitator = new CountingFacilitatorClient(
-  new HTTPFacilitatorClient({ url: config.X402_FACILITATOR_URL })
+  new HTTPFacilitatorClient({ url: config.X402_FACILITATOR_URL }),
 )
 
 const { app, identity } = await createSeller({
@@ -44,18 +48,22 @@ const { app, identity } = await createSeller({
   payTo,
   price: config.ENDPOINT_PRICE_USD,
   facilitatorClient: facilitator,
-  authorize: createAmountCapAuthorization(config.AUTHORIZATION_MAX_USD)
+  authorize: createAmountCapAuthorization(config.AUTHORIZATION_MAX_USD),
 })
 
 const server: Server = await new Promise((resolve, reject) => {
-  const s = app.listen(config.SELLER_PORT, () => resolve(s))
+  const s = app.listen(config.SELLER_PORT, () => {
+    resolve(s)
+  })
   // Fail loudly if the port is taken: a stale seller with old config would
   // otherwise serve the demo silently.
   s.once("error", reject)
 })
 
 console.log(`Seller:   ${config.sellerBaseUrl} (${identity.did})`)
-console.log(`Network:  ${config.X402_NETWORK}, price ${config.ENDPOINT_PRICE_USD}`)
+console.log(
+  `Network:  ${config.X402_NETWORK}, price ${config.ENDPOINT_PRICE_USD}`,
+)
 console.log(`Scenario: ${scenario}\n`)
 
 try {
@@ -64,8 +72,8 @@ try {
     sellerDid: identity.did,
     didPort: config.BUYER_DID_PORT,
     ...(config.BUYER_EVM_PRIVATE_KEY
-      ? { evmPrivateKey: config.BUYER_EVM_PRIVATE_KEY as `0x${string}` }
-      : {})
+      ? { evmPrivateKey: config.BUYER_EVM_PRIVATE_KEY }
+      : {}),
   })
 
   console.log(`Buyer DID:    ${result.buyerDid}`)
@@ -75,18 +83,17 @@ try {
     console.log(`Settlement:   success=${result.settlement.success}`)
     console.log(`Transaction:  ${result.settlement.transaction}`)
     console.log(
-      `Explorer:     https://sepolia.basescan.org/tx/${result.settlement.transaction}`
+      `Explorer:     https://sepolia.basescan.org/tx/${result.settlement.transaction}`,
     )
   }
   console.log(
-    `\nSettlement adapter calls: verify=${facilitator.verifyCalls} settle=${facilitator.settleCalls}`
+    `\nSettlement adapter calls: verify=${facilitator.verifyCalls} settle=${facilitator.settleCalls}`,
   )
 
   const ok =
     scenario === "valid"
       ? result.status === 200 && result.settlement?.success === true
-      : result.status >= 401 &&
-        result.status <= 403 &&
+      : (result.status === 401 || result.status === 403) &&
         facilitator.verifyCalls === 0 &&
         facilitator.settleCalls === 0
 
@@ -94,7 +101,7 @@ try {
     console.log(
       scenario === "valid"
         ? "\nPASS: identity verified, payment settled, resource delivered."
-        : "\nPASS: identity rejected before any payment; settlement adapter never invoked."
+        : "\nPASS: identity rejected before any payment; settlement adapter never invoked.",
     )
   } else {
     console.error("\nFAIL: scenario did not behave as required.")

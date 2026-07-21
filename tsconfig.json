@@ -10,9 +10,7 @@
     "exactOptionalPropertyTypes": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
-    "noEmit": true,
-    "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true
+    "noEmit": true
   },
   "include": ["src", "scripts", "test", "eslint.config.js", "vitest.config.ts"]
 }

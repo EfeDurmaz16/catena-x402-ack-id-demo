@@ -10,12 +10,13 @@ import type {
   PaymentRequirements,
   SettleResponse,
   SupportedResponse,
-  VerifyResponse
+  VerifyResponse,
 } from "@x402/core/types"
 import type { Server } from "node:http"
 
 export const TEST_NETWORK: Network = "eip155:84532"
 export const TEST_PAY_TO = "0x0000000000000000000000000000000000000001"
+export const TEST_PAYER = "0x0000000000000000000000000000000000000002"
 
 /**
  * Facilitator test double: records every verify/settle invocation and
@@ -23,36 +24,36 @@ export const TEST_PAY_TO = "0x0000000000000000000000000000000000000001"
  * (and is not) reached without touching any network.
  */
 export class FakeFacilitatorClient implements FacilitatorClient {
-  verifyCalls: PaymentPayload[] = []
-  settleCalls: PaymentPayload[] = []
+  readonly verifyCalls: PaymentPayload[] = []
+  readonly settleCalls: PaymentPayload[] = []
 
-  async verify(
+  verify(
     payload: PaymentPayload,
-    _requirements: PaymentRequirements
+    _requirements: PaymentRequirements,
   ): Promise<VerifyResponse> {
     this.verifyCalls.push(payload)
-    return { isValid: true, payer: TEST_PAY_TO }
+    return Promise.resolve({ isValid: true, payer: TEST_PAYER })
   }
 
-  async settle(
+  settle(
     payload: PaymentPayload,
-    _requirements: PaymentRequirements
+    _requirements: PaymentRequirements,
   ): Promise<SettleResponse> {
     this.settleCalls.push(payload)
-    return {
+    return Promise.resolve({
       success: true,
       transaction: "0xtest-settlement-transaction",
       network: TEST_NETWORK,
-      payer: TEST_PAY_TO
-    }
+      payer: TEST_PAYER,
+    })
   }
 
-  async getSupported(): Promise<SupportedResponse> {
-    return {
+  getSupported(): Promise<SupportedResponse> {
+    return Promise.resolve({
       kinds: [{ x402Version: 2, scheme: "exact", network: TEST_NETWORK }],
       extensions: [],
-      signers: {}
-    }
+      signers: {},
+    })
   }
 }
 
@@ -68,7 +69,7 @@ export interface TestSeller {
  * seller's did:web identity encodes the real base URL.
  */
 export async function startTestSeller(
-  options: { price?: string; authorize?: Authorize } = {}
+  options: { price?: string; authorize?: Authorize } = {},
 ): Promise<TestSeller> {
   const price = options.price ?? "$0.001"
   const facilitator = new FakeFacilitatorClient()
@@ -93,7 +94,7 @@ export async function startTestSeller(
     payTo: TEST_PAY_TO,
     price,
     facilitatorClient: facilitator,
-    authorize: options.authorize ?? createAmountCapAuthorization("$0.05")
+    authorize: options.authorize ?? createAmountCapAuthorization("$0.05"),
   })
   server.on("request", app)
 
@@ -103,7 +104,9 @@ export async function startTestSeller(
     facilitator,
     close: () =>
       new Promise((resolve) => {
-        server.close(() => resolve())
-      })
+        server.close(() => {
+          resolve()
+        })
+      }),
   }
 }

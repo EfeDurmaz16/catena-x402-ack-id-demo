@@ -5,6 +5,8 @@
  */
 import { afterEach, describe, expect, it } from "vitest"
 import { runBuyer } from "../src/buyer/buyer.js"
+import { startDidHost } from "../src/buyer/did-host.js"
+import { createIdentity, createIdentityProof } from "../src/identity.js"
 import { PROTECTED_PATH } from "../src/seller/server.js"
 import { startTestSeller } from "./helpers.js"
 import type { Scenario } from "../src/buyer/buyer.js"
@@ -27,7 +29,7 @@ async function runScenario(scenario: Scenario) {
   const result = await runBuyer(scenario, {
     sellerUrl: seller.url,
     sellerDid: seller.identity.did,
-    evmPrivateKey: TEST_PRIVATE_KEY
+    evmPrivateKey: TEST_PRIVATE_KEY,
   })
   return { result, seller }
 }
@@ -38,7 +40,7 @@ describe("identity-before-payment ordering", () => {
     expect(result.status).toBe(200)
     expect(result.body).toMatchObject({
       report: "premium-market-signal",
-      buyer: result.buyerDid
+      buyer: result.buyerDid,
     })
     expect(result.settlement?.success).toBe(true)
     expect(seller.facilitator.verifyCalls).toHaveLength(1)
@@ -48,7 +50,7 @@ describe("identity-before-payment ordering", () => {
   it.each([
     ["missing-identity", 401, "identity_missing"],
     ["mismatched-identity", 403, "identity_mismatched"],
-    ["expired-identity", 401, "identity_expired"]
+    ["expired-identity", 401, "identity_expired"],
   ] as const satisfies readonly (readonly [Scenario, number, string])[])(
     "%s: rejected with %d before the settlement adapter is ever invoked",
     async (scenario, status, code) => {
@@ -58,13 +60,13 @@ describe("identity-before-payment ordering", () => {
       expect(result.settlement).toBeUndefined()
       expect(seller.facilitator.verifyCalls).toHaveLength(0)
       expect(seller.facilitator.settleCalls).toHaveLength(0)
-    }
+    },
   )
 
   it("garbage identity proof: rejected without reaching the settlement adapter", async () => {
     seller = await startTestSeller()
     const response = await fetch(`${seller.url}${PROTECTED_PATH}`, {
-      headers: { authorization: "Bearer not.a.jwt" }
+      headers: { authorization: "Bearer not.a.jwt" },
     })
     expect(response.status).toBe(401)
     const body: unknown = await response.json()
@@ -75,12 +77,12 @@ describe("identity-before-payment ordering", () => {
 
   it("authorization stub: valid identity but price over cap is denied before payment", async () => {
     seller = await startTestSeller({
-      price: "$0.10" // over the $0.05 default cap
+      price: "$0.10", // over the $0.05 default cap
     })
     const result = await runBuyer("valid", {
       sellerUrl: seller.url,
       sellerDid: seller.identity.did,
-      evmPrivateKey: TEST_PRIVATE_KEY
+      evmPrivateKey: TEST_PRIVATE_KEY,
     })
     expect(result.status).toBe(403)
     expect(result.body).toMatchObject({ error: "authorization_denied" })
@@ -90,10 +92,6 @@ describe("identity-before-payment ordering", () => {
 
   it("replayed identity proof: second use is rejected before payment", async () => {
     seller = await startTestSeller()
-    const { createIdentityProof, createIdentity } = await import(
-      "../src/identity.js"
-    )
-    const { startDidHost } = await import("../src/buyer/did-host.js")
     const host = await startDidHost()
     try {
       const identity = await createIdentity(host.baseUrl)
@@ -101,36 +99,38 @@ describe("identity-before-payment ordering", () => {
       const proof = await createIdentityProof({
         issuerDid: identity.did,
         keypair: identity.keypair,
-        audience: seller.identity.did
+        audience: seller.identity.did,
       })
       // Unpaid requests (no payment header) verify the proof but do not
       // consume its nonce: they can only ever earn a 402 challenge.
       const unpaid = await fetch(`${seller.url}${PROTECTED_PATH}`, {
-        headers: { authorization: `Bearer ${proof}` }
+        headers: { authorization: `Bearer ${proof}` },
       })
       expect(unpaid.status).toBe(402)
 
-      // A payment-bearing request consumes the nonce...
+      // A payment-bearing request consumes the nonce. Its garbage payment
+      // fails to decode, so the payment layer answers with a fresh 402.
       const paid = await fetch(`${seller.url}${PROTECTED_PATH}`, {
         headers: {
           authorization: `Bearer ${proof}`,
-          "payment-signature": "bm90LWEtcmVhbC1wYXltZW50"
-        }
+          "payment-signature": "bm90LWEtcmVhbC1wYXltZW50",
+        },
       })
-      expect(paid.status).not.toBe(200)
+      expect(paid.status).toBe(402)
 
       // ...so replaying the same proof on a second payment-bearing request
       // is rejected before the payment layer.
       const replayed = await fetch(`${seller.url}${PROTECTED_PATH}`, {
         headers: {
           authorization: `Bearer ${proof}`,
-          "payment-signature": "bm90LWEtcmVhbC1wYXltZW50"
-        }
+          "payment-signature": "bm90LWEtcmVhbC1wYXltZW50",
+        },
       })
       expect(replayed.status).toBe(403)
       const body: unknown = await replayed.json()
       expect(body).toMatchObject({ error: "identity_replayed" })
       // The garbage payment header never verified or settled anything.
+      expect(seller.facilitator.verifyCalls).toHaveLength(0)
       expect(seller.facilitator.settleCalls).toHaveLength(0)
     } finally {
       await host.close()

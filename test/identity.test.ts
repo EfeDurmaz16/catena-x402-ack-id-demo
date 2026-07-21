@@ -1,5 +1,6 @@
+import { createJwt, createJwtSigner } from "@agentcommercekit/jwt"
 import { generateKeypair } from "@agentcommercekit/keys"
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
 import { startDidHost } from "../src/buyer/did-host.js"
 import { moneyToMicros } from "../src/config.js"
 import {
@@ -7,28 +8,36 @@ import {
   createIdentityProof,
   IdentityError,
   NonceCache,
-  verifyIdentityProof
+  verifyIdentityProof,
 } from "../src/identity.js"
 import { createAmountCapAuthorization } from "../src/seller/authorization.js"
-import type { Identity } from "../src/identity.js"
 import type { DidHost } from "../src/buyer/did-host.js"
+import type { Identity } from "../src/identity.js"
 
 const SELLER_DID = "did:web:seller.example"
 
-async function hostedIdentity(): Promise<{ identity: Identity; host: DidHost }> {
-  const host = await startDidHost()
+let host: DidHost | undefined
+
+afterEach(async () => {
+  await host?.close()
+  host = undefined
+})
+
+/** Start a DID host and mint an identity whose document it serves. */
+async function hostedIdentity(): Promise<Identity> {
+  host = await startDidHost()
   const identity = await createIdentity(host.baseUrl)
   host.setDocument(identity.didDocument)
-  return { identity, host }
+  return identity
 }
 
 async function expectRejection(
   promise: Promise<unknown>,
-  code: string
+  code: string,
 ): Promise<void> {
   const error = await promise.then(
     () => undefined,
-    (e: unknown) => e
+    (e: unknown) => e,
   )
   expect(error).toBeInstanceOf(IdentityError)
   expect((error as IdentityError).code).toBe(code)
@@ -65,171 +74,131 @@ describe("amount-cap authorization stub", () => {
 
 describe("identity proof verification (did:web + JWT)", () => {
   it("verifies a valid proof and returns the buyer DID", async () => {
-    const { identity, host } = await hostedIdentity()
-    try {
-      const proof = await createIdentityProof({
-        issuerDid: identity.did,
-        keypair: identity.keypair,
-        audience: SELLER_DID
-      })
-      const verified = await verifyIdentityProof(proof, {
-        audience: SELLER_DID
-      })
-      expect(verified.did).toBe(identity.did)
-      expect(verified.nonce).toBeTruthy()
-    } finally {
-      await host.close()
-    }
+    const identity = await hostedIdentity()
+    const proof = await createIdentityProof({
+      issuerDid: identity.did,
+      keypair: identity.keypair,
+      audience: SELLER_DID,
+    })
+    const verified = await verifyIdentityProof(proof, { audience: SELLER_DID })
+    expect(verified.did).toBe(identity.did)
+    expect(verified.nonce).toBeTruthy()
   })
 
   it("rejects a missing proof as identity_missing", async () => {
     await expectRejection(
       verifyIdentityProof(undefined, { audience: SELLER_DID }),
-      "identity_missing"
+      "identity_missing",
     )
   })
 
   it("rejects a malformed proof as identity_invalid", async () => {
     await expectRejection(
       verifyIdentityProof("not-a-jwt", { audience: SELLER_DID }),
-      "identity_invalid"
+      "identity_invalid",
     )
   })
 
   it("rejects an expired proof as identity_expired", async () => {
-    const { identity, host } = await hostedIdentity()
-    try {
-      const proof = await createIdentityProof({
-        issuerDid: identity.did,
-        keypair: identity.keypair,
-        audience: SELLER_DID,
-        expiresInSeconds: -600
-      })
-      await expectRejection(
-        verifyIdentityProof(proof, { audience: SELLER_DID }),
-        "identity_expired"
-      )
-    } finally {
-      await host.close()
-    }
+    const identity = await hostedIdentity()
+    const proof = await createIdentityProof({
+      issuerDid: identity.did,
+      keypair: identity.keypair,
+      audience: SELLER_DID,
+      expiresInSeconds: -600,
+    })
+    await expectRejection(
+      verifyIdentityProof(proof, { audience: SELLER_DID }),
+      "identity_expired",
+    )
   })
 
   it("rejects a proof signed by a key the DID does not publish as identity_mismatched", async () => {
-    const { identity, host } = await hostedIdentity()
-    try {
-      const rogue = await generateKeypair("secp256k1")
-      const proof = await createIdentityProof({
-        issuerDid: identity.did,
-        keypair: rogue,
-        audience: SELLER_DID
-      })
-      await expectRejection(
-        verifyIdentityProof(proof, { audience: SELLER_DID }),
-        "identity_mismatched"
-      )
-    } finally {
-      await host.close()
-    }
+    const identity = await hostedIdentity()
+    const rogue = await generateKeypair("secp256k1")
+    const proof = await createIdentityProof({
+      issuerDid: identity.did,
+      keypair: rogue,
+      audience: SELLER_DID,
+    })
+    await expectRejection(
+      verifyIdentityProof(proof, { audience: SELLER_DID }),
+      "identity_mismatched",
+    )
   })
 
   it("rejects a proof that omits aud entirely as identity_mismatched", async () => {
     // did-jwt skips its audience check when the payload has no aud claim,
     // so this must be caught by our own exact-match guard.
-    const { identity, host } = await hostedIdentity()
-    try {
-      const { createJwt, createJwtSigner } = await import(
-        "@agentcommercekit/jwt"
-      )
-      const proof = await createJwt(
-        { nonce: "nonce-without-aud" },
-        {
-          issuer: identity.did,
-          signer: createJwtSigner(identity.keypair),
-          expiresIn: 300
-        }
-      )
-      await expectRejection(
-        verifyIdentityProof(proof, { audience: SELLER_DID }),
-        "identity_mismatched"
-      )
-    } finally {
-      await host.close()
-    }
+    const identity = await hostedIdentity()
+    const proof = await createJwt(
+      { nonce: "nonce-without-aud" },
+      {
+        issuer: identity.did,
+        signer: createJwtSigner(identity.keypair),
+        expiresIn: 300,
+      },
+    )
+    await expectRejection(
+      verifyIdentityProof(proof, { audience: SELLER_DID }),
+      "identity_mismatched",
+    )
   })
 
   it("rejects a proof issued for a different audience as identity_mismatched", async () => {
-    const { identity, host } = await hostedIdentity()
-    try {
-      const proof = await createIdentityProof({
-        issuerDid: identity.did,
-        keypair: identity.keypair,
-        audience: "did:web:some-other-seller.example"
-      })
-      await expectRejection(
-        verifyIdentityProof(proof, { audience: SELLER_DID }),
-        "identity_mismatched"
-      )
-    } finally {
-      await host.close()
-    }
+    const identity = await hostedIdentity()
+    const proof = await createIdentityProof({
+      issuerDid: identity.did,
+      keypair: identity.keypair,
+      audience: "did:web:some-other-seller.example",
+    })
+    await expectRejection(
+      verifyIdentityProof(proof, { audience: SELLER_DID }),
+      "identity_mismatched",
+    )
   })
 
   it("rejects a replayed nonce as identity_replayed", async () => {
-    const { identity, host } = await hostedIdentity()
-    try {
-      const nonceCache = new NonceCache()
-      const proof = await createIdentityProof({
-        issuerDid: identity.did,
-        keypair: identity.keypair,
-        audience: SELLER_DID
-      })
-      await verifyIdentityProof(proof, { audience: SELLER_DID, nonceCache })
-      await expectRejection(
-        verifyIdentityProof(proof, { audience: SELLER_DID, nonceCache }),
-        "identity_replayed"
-      )
-    } finally {
-      await host.close()
-    }
+    const identity = await hostedIdentity()
+    const nonceCache = new NonceCache()
+    const proof = await createIdentityProof({
+      issuerDid: identity.did,
+      keypair: identity.keypair,
+      audience: SELLER_DID,
+    })
+    await verifyIdentityProof(proof, { audience: SELLER_DID, nonceCache })
+    await expectRejection(
+      verifyIdentityProof(proof, { audience: SELLER_DID, nonceCache }),
+      "identity_replayed",
+    )
   })
 
   it("rejects a proof with no expiry as identity_invalid", async () => {
     // A non-expiring proof would verify forever and its nonce would never be
     // pruned; require a bounded exp.
-    const { identity, host } = await hostedIdentity()
-    try {
-      const { createJwt, createJwtSigner } = await import(
-        "@agentcommercekit/jwt"
-      )
-      const proof = await createJwt(
-        { aud: SELLER_DID, nonce: "no-exp-nonce" },
-        { issuer: identity.did, signer: createJwtSigner(identity.keypair) }
-      )
-      await expectRejection(
-        verifyIdentityProof(proof, { audience: SELLER_DID }),
-        "identity_invalid"
-      )
-    } finally {
-      await host.close()
-    }
+    const identity = await hostedIdentity()
+    const proof = await createJwt(
+      { aud: SELLER_DID, nonce: "no-exp-nonce" },
+      { issuer: identity.did, signer: createJwtSigner(identity.keypair) },
+    )
+    await expectRejection(
+      verifyIdentityProof(proof, { audience: SELLER_DID }),
+      "identity_invalid",
+    )
   })
 
   it("rejects a proof whose expiry is too far in the future as identity_invalid", async () => {
-    const { identity, host } = await hostedIdentity()
-    try {
-      const proof = await createIdentityProof({
-        issuerDid: identity.did,
-        keypair: identity.keypair,
-        audience: SELLER_DID,
-        expiresInSeconds: 100_000 // well beyond the 900s cap
-      })
-      await expectRejection(
-        verifyIdentityProof(proof, { audience: SELLER_DID }),
-        "identity_invalid"
-      )
-    } finally {
-      await host.close()
-    }
+    const identity = await hostedIdentity()
+    const proof = await createIdentityProof({
+      issuerDid: identity.did,
+      keypair: identity.keypair,
+      audience: SELLER_DID,
+      expiresInSeconds: 100_000, // well beyond the 900s cap
+    })
+    await expectRejection(
+      verifyIdentityProof(proof, { audience: SELLER_DID }),
+      "identity_invalid",
+    )
   })
 })
 

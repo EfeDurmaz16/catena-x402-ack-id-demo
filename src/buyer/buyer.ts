@@ -3,19 +3,19 @@ import { ExactEvmScheme } from "@x402/evm/exact/client"
 import {
   decodePaymentResponseHeader,
   wrapFetchWithPayment,
-  x402Client
+  x402Client,
 } from "@x402/fetch"
 import { privateKeyToAccount } from "viem/accounts"
 import { createIdentity, createIdentityProof } from "../identity.js"
 import { PROTECTED_PATH } from "../seller/server.js"
 import { startDidHost } from "./did-host.js"
-import type { Network, SettleResponse } from "@x402/core/types"
+import type { SettleResponse } from "@x402/core/types"
 
 export const SCENARIOS = [
   "valid",
   "missing-identity",
   "mismatched-identity",
-  "expired-identity"
+  "expired-identity",
 ] as const
 
 export type Scenario = (typeof SCENARIOS)[number]
@@ -54,12 +54,12 @@ export interface BuyerRunResult {
  */
 export async function runBuyer(
   scenario: Scenario,
-  options: BuyerOptions
+  options: BuyerOptions,
 ): Promise<BuyerRunResult> {
   const { sellerUrl, sellerDid, didPort = 0, evmPrivateKey } = options
   if (scenario === "valid" && !evmPrivateKey) {
     throw new Error(
-      "BUYER_EVM_PRIVATE_KEY is required for the valid scenario (it signs the USDC payment)"
+      "evmPrivateKey is required for the valid scenario: it signs the USDC payment (the demo reads it from BUYER_EVM_PRIVATE_KEY)",
     )
   }
 
@@ -74,7 +74,7 @@ export async function runBuyer(
         proof = await createIdentityProof({
           issuerDid: identity.did,
           keypair: identity.keypair,
-          audience: sellerDid
+          audience: sellerDid,
         })
         break
       case "missing-identity":
@@ -87,7 +87,7 @@ export async function runBuyer(
         proof = await createIdentityProof({
           issuerDid: identity.did,
           keypair: rogueKeypair,
-          audience: sellerDid
+          audience: sellerDid,
         })
         break
       }
@@ -96,20 +96,20 @@ export async function runBuyer(
           issuerDid: identity.did,
           keypair: identity.keypair,
           audience: sellerDid,
-          expiresInSeconds: -600
+          expiresInSeconds: -600,
         })
         break
     }
 
     const signer = privateKeyToAccount(evmPrivateKey ?? UNUSED_PRIVATE_KEY)
     const client = new x402Client().register(
-      "eip155:*" as Network,
-      new ExactEvmScheme(signer)
+      "eip155:*",
+      new ExactEvmScheme(signer),
     )
     const fetchWithPayment = wrapFetchWithPayment(fetch, client)
 
     const response = await fetchWithPayment(`${sellerUrl}${PROTECTED_PATH}`, {
-      headers: proof ? { authorization: `Bearer ${proof}` } : {}
+      headers: proof ? { authorization: `Bearer ${proof}` } : {},
     })
 
     const body: unknown = await response.json().catch(() => undefined)
@@ -118,7 +118,7 @@ export async function runBuyer(
       scenario,
       buyerDid: identity.did,
       status: response.status,
-      body
+      body,
     }
     if (settlementHeader) {
       result.settlement = decodePaymentResponseHeader(settlementHeader)
