@@ -75,7 +75,9 @@ This completes a real ~$0.001 USDC payment on Base Sepolia via the public x402 f
 
 ## Catena sandbox note
 
-The facilitator endpoint is the settlement adapter's public surface (`X402_FACILITATOR_URL`). The demo defaults to the public x402 testnet facilitator; when a Catena sandbox facilitator endpoint (via app.catena.com) is available, point the env var at it; no code changes needed. See [docs/architecture.md](docs/architecture.md#catena-integration-surface) for the current state of Catena's public surface.
+The seller banks at Catena: set `SELLER_PAY_TO_ADDRESS` to your Catena sandbox account's base-sepolia USDC deposit address (shown in the Catena console). The x402 settlement then lands directly in the Catena-governed account, and the received payment is visible in the console and via Catena's account/transaction reads.
+
+The facilitator endpoint is also env-injected (`X402_FACILITATOR_URL`, defaulting to the public x402 testnet facilitator); if Catena exposes a facilitator endpoint, point the env var at it; no code changes needed. See [docs/architecture.md](docs/architecture.md#catena-integration-surface) for the current state of Catena's public surface.
 
 ## License
 

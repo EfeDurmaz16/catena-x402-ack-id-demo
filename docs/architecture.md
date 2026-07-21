@@ -82,15 +82,21 @@ settlement transaction in `PAYMENT-RESPONSE`.
 
 ## Catena integration surface
 
-As of 2026-07-21 Catena Labs has no publicly documented payments API and no
-live Catena-operated x402 facilitator; ACK's own docs list "ACK Payment
-Services acting as x402 Facilitators" as a future direction, and the ACK-Lab
-developer preview is closed. The Catena-owned public surface used here is the
-Agent Commerce Kit libraries (identity leg).
+Catena's public surfaces used by this demo: the Agent Commerce Kit libraries
+(identity leg), and the Catena sandbox account as the seller's bank. Set the
+seller's `payTo` to the sandbox account's base-sepolia USDC deposit address
+(Catena console) and the x402 settlement lands in a Catena-governed account,
+observable through Catena's account and transaction reads. The repo stays a
+pure consumer of public surfaces.
 
-The settlement adapter is the seam prepared for Catena: the facilitator URL
-is env-injected (`X402_FACILITATOR_URL`) and the seller depends only on the
-`FacilitatorClient` interface. When a Catena sandbox facilitator endpoint
-exists, pointing the env var at it upgrades the demo to settle "through
-Catena" with no code changes (plus credentials, if its auth scheme requires
-them: `HTTPFacilitatorClient` supports auth headers).
+The settlement adapter remains the seam for deeper integration: the
+facilitator URL is env-injected (`X402_FACILITATOR_URL`, defaulting to the
+public x402 testnet facilitator, since Catena does not operate a public
+x402 facilitator today) and the seller depends only on the
+`FacilitatorClient` interface, so a Catena facilitator endpoint would be a
+config change, not a code change.
+
+Known gap (as of 2026-07-21): Catena's CLI x402 payer cannot attach custom
+request headers, so it cannot carry an ACK-ID identity proof in this flow;
+the buyer therefore signs x402 payments with its own wallet key while the
+seller settles into its Catena account.
