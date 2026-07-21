@@ -192,4 +192,56 @@ describe("identity proof verification (did:web + JWT)", () => {
       await host.close()
     }
   })
+
+  it("rejects a proof with no expiry as identity_invalid", async () => {
+    // A non-expiring proof would verify forever and its nonce would never be
+    // pruned; require a bounded exp.
+    const { identity, host } = await hostedIdentity()
+    try {
+      const { createJwt, createJwtSigner } = await import(
+        "@agentcommercekit/jwt"
+      )
+      const proof = await createJwt(
+        { aud: SELLER_DID, nonce: "no-exp-nonce" },
+        { issuer: identity.did, signer: createJwtSigner(identity.keypair) }
+      )
+      await expectRejection(
+        verifyIdentityProof(proof, { audience: SELLER_DID }),
+        "identity_invalid"
+      )
+    } finally {
+      await host.close()
+    }
+  })
+
+  it("rejects a proof whose expiry is too far in the future as identity_invalid", async () => {
+    const { identity, host } = await hostedIdentity()
+    try {
+      const proof = await createIdentityProof({
+        issuerDid: identity.did,
+        keypair: identity.keypair,
+        audience: SELLER_DID,
+        expiresInSeconds: 100_000 // well beyond the 900s cap
+      })
+      await expectRejection(
+        verifyIdentityProof(proof, { audience: SELLER_DID }),
+        "identity_invalid"
+      )
+    } finally {
+      await host.close()
+    }
+  })
+})
+
+describe("NonceCache TTL", () => {
+  it("blocks reuse before expiry and allows it only after the entry is pruned", () => {
+    const cache = new NonceCache()
+    const now = Date.now()
+    // Reserve a nonce that expires in the past: it is stored, then pruned on
+    // the next call, so a fresh reservation of the same value succeeds.
+    expect(cache.markUsed("n1", now - 1)).toBe(true)
+    expect(cache.markUsed("n1", now + 60_000)).toBe(true)
+    // Now it is reserved into the future: an immediate reuse is blocked.
+    expect(cache.markUsed("n1", now + 60_000)).toBe(false)
+  })
 })

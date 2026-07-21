@@ -77,10 +77,26 @@ export class IdentityError extends Error {
 }
 
 /**
+ * did-jwt still accepts a token for this many seconds past its `exp`
+ * (its default clock skew). The nonce reservation must outlast this window,
+ * or a captured proof could be replayed after its cache entry is pruned but
+ * while it still verifies.
+ */
+const JWT_SKEW_SECONDS = 300
+
+/**
+ * Reject proofs whose `exp` is further in the future than this. Bounds how
+ * long a proof stays valid (a replay window) and how long its nonce entry
+ * lives in the cache, so a hostile buyer cannot mint permanent entries.
+ */
+const MAX_PROOF_LIFETIME_SECONDS = 900
+
+/**
  * In-memory nonce replay cache. The ACK libraries verify signatures and
  * standard JWT claims but leave replay protection to the application.
- * ponytail: in-memory Map, swap for a shared store if the seller ever runs
- * more than one instance.
+ * ponytail: in-memory Map with an O(n) prune per call, bounded because
+ * verifyIdentityProof caps proof lifetime; swap for a shared store if the
+ * seller ever runs more than one instance.
  */
 export class NonceCache {
   #seen = new Map<string, number>()
@@ -167,8 +183,30 @@ export async function verifyIdentityProof(
       "Identity proof is missing a nonce"
     )
   }
+
+  // A money-path proof must carry a bounded expiry. did-jwt skips its expiry
+  // check entirely when `exp` is absent, so without this a non-expiring proof
+  // would verify forever and its nonce entry would never be pruned.
+  const exp = payload.exp
+  if (typeof exp !== "number") {
+    throw new IdentityError(
+      "identity_invalid",
+      "Identity proof must carry an expiry (exp)"
+    )
+  }
+  const nowSeconds = Math.floor(Date.now() / 1000)
+  if (exp > nowSeconds + MAX_PROOF_LIFETIME_SECONDS) {
+    throw new IdentityError(
+      "identity_invalid",
+      "Identity proof expiry is too far in the future"
+    )
+  }
+
   if (nonceCache && consumeNonce) {
-    const expiresAtMs = (payload.exp ?? Math.floor(Date.now() / 1000)) * 1000
+    // Reserve the nonce past did-jwt's skew window, so it cannot be replayed
+    // in the interval where the proof still verifies but a shorter TTL would
+    // have already pruned the entry.
+    const expiresAtMs = (exp + JWT_SKEW_SECONDS) * 1000
     if (!nonceCache.markUsed(nonce, expiresAtMs)) {
       throw new IdentityError(
         "identity_replayed",

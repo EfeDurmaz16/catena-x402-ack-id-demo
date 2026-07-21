@@ -71,6 +71,25 @@ proof but leave the nonce intact; replaying a proof on a second
 payment-bearing request is rejected (403 `identity_replayed`) before the
 payment layer. The replay cache is in-memory (single-instance demo scope).
 
+Two hardening rules make "nonce single-use" hold against a hostile buyer, not
+just the scripted one. First, a proof must carry a bounded `exp`: did-jwt
+skips its expiry check when `exp` is absent, so a non-expiring proof would
+verify forever and its nonce entry would never be pruned (a memory-growth
+vector); proofs with no `exp`, or an `exp` further out than a fixed cap, are
+rejected. Second, the nonce entry is reserved until `exp` plus did-jwt's clock
+skew, not just `exp`: did-jwt keeps accepting a token for ~300s past its
+expiry, and a shorter reservation would prune the entry while the proof still
+verifies, opening a replay window. See `JWT_SKEW_SECONDS` and
+`MAX_PROOF_LIFETIME_SECONDS` in `src/identity.ts`.
+
+Residual, documented limitation: the nonce is consumed on the presence of a
+payment header, not on a validated payment, so an attacker who has captured a
+victim's still-unspent proof (only possible without TLS) could burn its nonce
+with a junk payment header, forcing the victim to mint a fresh proof. No money
+moves and no protected result is served; the cost is a re-mint. Consuming only
+after settlement would couple the gate to x402 internals, which this demo
+deliberately avoids.
+
 ## Payment leg
 
 x402 protocol v2 (`@x402/*` 2.19.0), `exact` scheme on `eip155:84532`
