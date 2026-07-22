@@ -119,6 +119,13 @@ not oversights.
 - **Single process.** The nonce cache is in-memory, so replay protection does
   not hold across replicas or restarts. A shared store (Redis) keyed on the
   nonce is the production form.
+- **No request rate limiting.** The seller does not cap request rate, so a
+  caller can hammer the endpoint unbounded (each request costs a did:web
+  resolution, bounded by the 5s fetch timeout, and a nonce-cache lookup,
+  bounded by the cap). A production service would add per-IP / per-DID rate
+  limiting. The public facilitator and RPC apply their own limits, and the
+  price is required to be greater than zero so the demo never generates a
+  0-value settlement.
 - **did:web response size.** Resolution fetches with a timeout and allows HTTP
   only for local hosts (`createSellerResolver`), but does not cap the response
   body; a production resolver would stream and bound it.

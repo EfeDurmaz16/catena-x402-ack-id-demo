@@ -32,11 +32,13 @@ const envSchema = z.object({
   /**
    * Price of the protected endpoint, as a money string. At most 6 decimals,
    * so any accepted value parses to micro-dollars and bad config fails at
-   * startup instead of on the money path.
+   * startup instead of on the money path. Must be greater than zero: a paid
+   * endpoint that charges nothing would settle a 0-value payment.
    */
   ENDPOINT_PRICE_USD: z
     .string()
     .regex(/^\$\d+(\.\d{1,6})?$/)
+    .refine((v) => moneyToMicros(v) > 0n, "price must be greater than 0")
     .default("$0.001"),
   /** Per-request cap enforced by the authorization stub. Same shape rule. */
   AUTHORIZATION_MAX_USD: z

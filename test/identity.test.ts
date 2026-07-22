@@ -2,7 +2,7 @@ import { createJwt, createJwtSigner } from "@agentcommercekit/jwt"
 import { generateKeypair } from "@agentcommercekit/keys"
 import { afterEach, describe, expect, it } from "vitest"
 import { startDidHost } from "../src/buyer/did-host.js"
-import { moneyToMicros } from "../src/config.js"
+import { loadConfig, moneyToMicros } from "../src/config.js"
 import {
   createIdentity,
   createIdentityProof,
@@ -53,6 +53,19 @@ describe("moneyToMicros", () => {
   it("rejects malformed and over-precise values", () => {
     expect(() => moneyToMicros("0.001")).toThrow()
     expect(() => moneyToMicros("$0.0000001")).toThrow()
+  })
+})
+
+describe("config", () => {
+  it("rejects a zero endpoint price (a paid endpoint must charge > 0)", () => {
+    expect(() => loadConfig({ ENDPOINT_PRICE_USD: "$0" })).toThrow()
+    expect(() => loadConfig({ ENDPOINT_PRICE_USD: "$0.000000" })).toThrow()
+  })
+
+  it("accepts a positive price", () => {
+    expect(
+      loadConfig({ ENDPOINT_PRICE_USD: "$0.001" }).ENDPOINT_PRICE_USD,
+    ).toBe("$0.001")
   })
 })
 
