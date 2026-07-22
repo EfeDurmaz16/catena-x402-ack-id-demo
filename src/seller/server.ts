@@ -2,6 +2,7 @@ import { ExactEvmScheme } from "@x402/evm/exact/server"
 import { paymentMiddleware, x402ResourceServer } from "@x402/express"
 import express from "express"
 import {
+  consumeProofNonce,
   createIdentity,
   createSellerResolver,
   IdentityError,
@@ -59,23 +60,18 @@ function extractBearerToken(req: Request): string | undefined {
   return header.slice("Bearer ".length)
 }
 
-/** Non-empty header value, mirroring @x402/express's truthiness check. */
-function hasHeader(value: string | string[] | undefined): boolean {
-  return value !== undefined && value.length > 0
-}
-
 /** Minimal read-only view of the x402 hook's transport context. */
 interface X402Transport {
   request?: { adapter?: { getHeader(name: string): string | undefined } }
 }
 
-/** The proof bound to the request that reached the payment layer. */
-function boundPaymentAddress(transportContext: unknown): string | undefined {
+/** The identity proof (bearer token) on the request that reached the payment layer. */
+function bearerFromTransport(transportContext: unknown): string | undefined {
   const header = (
     transportContext as X402Transport | undefined
   )?.request?.adapter?.getHeader("authorization")
   if (!header?.startsWith("Bearer ")) return undefined
-  return readBoundPaymentAddress(header.slice("Bearer ".length))
+  return header.slice("Bearer ".length)
 }
 
 /** The wallet that signed the x402 payment (EIP-3009 `from`). */
@@ -118,21 +114,14 @@ export async function createSeller(options: SellerOptions): Promise<Seller> {
   // 1 + 2: identity, then authorization: both strictly before payment
   const identityGate: RequestHandler = async (req, res, next) => {
     try {
-      // Only payment-bearing requests can reach settlement, so only they
-      // consume the proof's single-use nonce; the initial unpaid request
-      // (which just earns the 402 challenge) verifies without consuming.
-      // Truthiness, not presence: @x402/express treats an empty header as
-      // unpaid (getHeader(...) || getHeader(...)), and this check must agree
-      // with it or a nonce could be burned on a request the payment layer
-      // considers unpaid.
-      const carriesPayment =
-        hasHeader(req.headers["payment-signature"]) ||
-        hasHeader(req.headers["x-payment"])
+      // Verify identity only. The proof's single-use nonce is NOT consumed here:
+      // x402 sends the same proof on both the unpaid 402 probe and the paid
+      // retry, and consuming on either would either reject the legitimate retry
+      // or let a garbage payment burn a valid nonce. Consumption happens once,
+      // at settlement, in the payment hook below.
       const verified = await verifyIdentityProof(extractBearerToken(req), {
         audience: identity.did,
         resolver,
-        nonceCache,
-        consumeNonce: carriesPayment,
       })
       const decision = await authorize({ did: verified.did, price })
       if (!decision.allowed) {
@@ -161,23 +150,47 @@ export async function createSeller(options: SellerOptions): Promise<Seller> {
   app.use(PROTECTED_PATH, identityGate)
 
   // 3: x402 payment: only reachable with a verified, authorized identity.
-  // onAfterVerify runs once the facilitator has verified the payment but
-  // before it settles, so aborting here rejects the request without moving
-  // money. It binds identity to payment: the wallet that signed the payment
-  // must be the one the proof committed to. Without this, an attacker could
-  // pair their own valid proof with someone else's payment authorization.
+  // onAfterVerify runs once the facilitator has verified the payment but before
+  // it settles, so aborting here rejects the request without moving money. Two
+  // checks run here, in order:
+  //   a. Bind identity to payment: the wallet that signed the payment must be
+  //      the one the proof committed to. Without this, an attacker could pair
+  //      their own valid proof with someone else's payment authorization.
+  //   b. Consume the proof's single-use nonce, now that a bound, verified
+  //      payment is about to settle. Binding runs first so a mismatched (that
+  //      is, misused) proof aborts without burning the real holder's nonce.
   const resourceServer = new x402ResourceServer(facilitatorClient)
     .register(network, new ExactEvmScheme())
     .onAfterVerify((ctx) => {
-      const bound = boundPaymentAddress(ctx.transportContext)?.toLowerCase()
+      const token = bearerFromTransport(ctx.transportContext)
+      const bound = token
+        ? readBoundPaymentAddress(token)?.toLowerCase()
+        : undefined
       const payer = paymentPayer(ctx.paymentPayload)?.toLowerCase()
-      if (bound === undefined || payer === undefined || bound !== payer) {
+      if (
+        token === undefined ||
+        bound === undefined ||
+        payer === undefined ||
+        bound !== payer
+      ) {
         return Promise.resolve({
           abort: true as const,
           reason: "identity_payer_mismatch",
           message:
             "Payment wallet is not the address bound in the identity proof",
         })
+      }
+      try {
+        consumeProofNonce(token, nonceCache)
+      } catch (error) {
+        if (error instanceof IdentityError) {
+          return Promise.resolve({
+            abort: true as const,
+            reason: error.code,
+            message: error.message,
+          })
+        }
+        throw error
       }
       return Promise.resolve()
     })

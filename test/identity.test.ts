@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest"
 import { startDidHost } from "../src/buyer/did-host.js"
 import { loadConfig, moneyToMicros } from "../src/config.js"
 import {
+  consumeProofNonce,
   createIdentity,
   createIdentityProof,
   IdentityError,
@@ -182,19 +183,25 @@ describe("identity proof verification (did:web + JWT)", () => {
     )
   })
 
-  it("rejects a replayed nonce as identity_replayed", async () => {
-    const identity = await hostedIdentity()
-    const nonceCache = new NonceCache()
+  it("consumeProofNonce consumes a nonce once and rejects the second use", async () => {
+    // Replay single-use is enforced at settlement, not during verification, so
+    // that an unpaid or non-settling request never burns a legitimate nonce.
+    const identity = await createIdentity("https://buyer.example")
+    const cache = new NonceCache()
     const proof = await createIdentityProof({
       issuerDid: identity.did,
       keypair: identity.keypair,
       audience: SELLER_DID,
     })
-    await verifyIdentityProof(proof, { audience: SELLER_DID, nonceCache })
-    await expectRejection(
-      verifyIdentityProof(proof, { audience: SELLER_DID, nonceCache }),
-      "identity_replayed",
-    )
+    consumeProofNonce(proof, cache) // first use: consumed
+    let error: unknown
+    try {
+      consumeProofNonce(proof, cache) // second use: replay
+    } catch (e) {
+      error = e
+    }
+    expect(error).toBeInstanceOf(IdentityError)
+    expect((error as IdentityError).code).toBe("identity_replayed")
   })
 
   it("rejects a proof with no expiry as identity_invalid", async () => {

@@ -6,6 +6,9 @@
 import { createDidKeyUri } from "@agentcommercekit/did"
 import { createJwt, createJwtSigner } from "@agentcommercekit/jwt"
 import { generateKeypair } from "@agentcommercekit/keys"
+import { ExactEvmScheme } from "@x402/evm/exact/client"
+import { wrapFetchWithPayment, x402Client } from "@x402/fetch"
+import { privateKeyToAccount } from "viem/accounts"
 import { afterEach, describe, expect, it } from "vitest"
 import { runBuyer } from "../src/buyer/buyer.js"
 import { startDidHost } from "../src/buyer/did-host.js"
@@ -185,50 +188,86 @@ describe("identity-before-payment ordering", () => {
     expect(seller.facilitator.settleCalls).toHaveLength(0)
   })
 
-  it("replayed identity proof: second use is rejected before payment", async () => {
+  it("replayed identity proof: a second settleable payment with the same proof never settles", async () => {
+    // The nonce is consumed at settlement, so replay is proven by driving two
+    // real payments with the same proof: the first settles, the second reaches
+    // the facilitator's verify but is aborted before settle.
     seller = await startTestSeller()
     const host = await startDidHost()
-    try {
-      const identity = await createIdentity(host.baseUrl)
-      host.setDocument(identity.didDocument)
-      const proof = await createIdentityProof({
-        issuerDid: identity.did,
-        keypair: identity.keypair,
-        audience: seller.identity.did,
-      })
-      // Unpaid requests (no payment header) verify the proof but do not
-      // consume its nonce: they can only ever earn a 402 challenge.
-      const unpaid = await fetch(`${seller.url}${PROTECTED_PATH}`, {
-        headers: { authorization: `Bearer ${proof}` },
-      })
-      expect(unpaid.status).toBe(402)
+    hosts.push(host)
+    const identity = await createIdentity(host.baseUrl)
+    host.setDocument(identity.didDocument)
+    const signer = privateKeyToAccount(TEST_PRIVATE_KEY)
+    const proof = await createIdentityProof({
+      issuerDid: identity.did,
+      keypair: identity.keypair,
+      audience: seller.identity.did,
+      paymentAddress: signer.address, // bind the proof to the paying wallet
+    })
+    const client = new x402Client().register(
+      "eip155:*",
+      new ExactEvmScheme(signer),
+    )
+    const pay = wrapFetchWithPayment(fetch, client)
+    const url = `${seller.url}${PROTECTED_PATH}`
 
-      // A payment-bearing request consumes the nonce. Its garbage payment
-      // fails to decode, so the payment layer answers with a fresh 402.
-      const paid = await fetch(`${seller.url}${PROTECTED_PATH}`, {
-        headers: {
-          authorization: `Bearer ${proof}`,
-          "payment-signature": "bm90LWEtcmVhbC1wYXltZW50",
-        },
-      })
-      expect(paid.status).toBe(402)
+    // First settleable payment: nonce consumed at settle time; it goes through.
+    const first = await pay(url, {
+      headers: { authorization: `Bearer ${proof}` },
+    })
+    expect(first.status).toBe(200)
+    expect(seller.facilitator.verifyCalls).toHaveLength(1)
+    expect(seller.facilitator.settleCalls).toHaveLength(1)
 
-      // ...so replaying the same proof on a second payment-bearing request
-      // is rejected before the payment layer.
-      const replayed = await fetch(`${seller.url}${PROTECTED_PATH}`, {
-        headers: {
-          authorization: `Bearer ${proof}`,
-          "payment-signature": "bm90LWEtcmVhbC1wYXltZW50",
-        },
-      })
-      expect(replayed.status).toBe(403)
-      const body: unknown = await replayed.json()
-      expect(body).toMatchObject({ error: "identity_replayed" })
-      // The garbage payment header never verified or settled anything.
-      expect(seller.facilitator.verifyCalls).toHaveLength(0)
-      expect(seller.facilitator.settleCalls).toHaveLength(0)
-    } finally {
-      await host.close()
-    }
+    // Same proof, second settleable payment: the facilitator verifies it
+    // (verify=2), but the nonce is already used, so the seller aborts before
+    // settle. No second settlement.
+    const second = await pay(url, {
+      headers: { authorization: `Bearer ${proof}` },
+    })
+    expect(second.status).not.toBe(200)
+    expect(seller.facilitator.verifyCalls).toHaveLength(2)
+    expect(seller.facilitator.settleCalls).toHaveLength(1)
+  })
+
+  it("a garbage payment does not burn the proof's nonce", async () => {
+    // Regression guard for the fix: the nonce is consumed only at settlement,
+    // so a payment that never settles (here, an undecodable one) leaves the
+    // proof usable. Under the old header-presence consumption this failed: the
+    // junk payment burned the nonce and the real payment was rejected as replay.
+    seller = await startTestSeller()
+    const host = await startDidHost()
+    hosts.push(host)
+    const identity = await createIdentity(host.baseUrl)
+    host.setDocument(identity.didDocument)
+    const signer = privateKeyToAccount(TEST_PRIVATE_KEY)
+    const proof = await createIdentityProof({
+      issuerDid: identity.did,
+      keypair: identity.keypair,
+      audience: seller.identity.did,
+      paymentAddress: signer.address,
+    })
+    const url = `${seller.url}${PROTECTED_PATH}`
+
+    // Undecodable payment: the payment layer never verifies or settles it.
+    const garbage = await fetch(url, {
+      headers: {
+        authorization: `Bearer ${proof}`,
+        "payment-signature": "bm90LWEtcmVhbC1wYXltZW50",
+      },
+    })
+    expect(garbage.status).not.toBe(200)
+    expect(seller.facilitator.settleCalls).toHaveLength(0)
+
+    // The same proof still pays for real and settles.
+    const client = new x402Client().register(
+      "eip155:*",
+      new ExactEvmScheme(signer),
+    )
+    const paid = await wrapFetchWithPayment(fetch, client)(url, {
+      headers: { authorization: `Bearer ${proof}` },
+    })
+    expect(paid.status).toBe(200)
+    expect(seller.facilitator.settleCalls).toHaveLength(1)
   })
 })

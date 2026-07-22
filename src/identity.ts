@@ -83,6 +83,19 @@ export async function createIdentityProof(
   )
 }
 
+/** Decode a JWT's payload claims WITHOUT verifying its signature. */
+function decodeProofPayload(jwt: string): Record<string, unknown> | undefined {
+  try {
+    const segment = jwt.split(".")[1]
+    if (!segment) return undefined
+    return JSON.parse(
+      Buffer.from(segment, "base64url").toString("utf8"),
+    ) as Record<string, unknown>
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Read the `paymentAddress` claim from a proof WITHOUT re-checking its
  * signature. Only safe once the identity gate has verified this exact token on
@@ -90,18 +103,8 @@ export async function createIdentityProof(
  * authenticated identity. Returns undefined if absent or malformed.
  */
 export function readBoundPaymentAddress(jwt: string): string | undefined {
-  try {
-    const segment = jwt.split(".")[1]
-    if (!segment) return undefined
-    const claims = JSON.parse(
-      Buffer.from(segment, "base64url").toString("utf8"),
-    ) as { paymentAddress?: unknown }
-    return typeof claims.paymentAddress === "string"
-      ? claims.paymentAddress
-      : undefined
-  } catch {
-    return undefined
-  }
+  const value = decodeProofPayload(jwt)?.paymentAddress
+  return typeof value === "string" ? value : undefined
 }
 
 export type IdentityRejectionCode =
@@ -184,18 +187,46 @@ export class NonceCache {
   }
 }
 
+/**
+ * Consume a proof's single-use nonce, at settlement time. Decodes the nonce and
+ * exp from the token WITHOUT re-verifying: safe only because the identity gate
+ * has already verified this exact token on the same request. Call this once the
+ * payment is verified and bound to the identity, immediately before settlement,
+ * so a request that never settles (an unpaid 402, an undecodable payment, a
+ * payment from the wrong wallet) cannot burn a legitimate proof's nonce. Throws
+ * identity_replayed if the nonce was already used.
+ */
+export function consumeProofNonce(jwt: string, nonceCache: NonceCache): void {
+  const claims = decodeProofPayload(jwt)
+  const nonce = claims?.nonce
+  const exp = claims?.exp
+  if (
+    typeof nonce !== "string" ||
+    nonce.length === 0 ||
+    typeof exp !== "number"
+  ) {
+    // The gate verified both on this request; their absence here would mean the
+    // token changed between middleware, which must not settle.
+    throw new IdentityError(
+      "identity_invalid",
+      "Identity proof is missing a nonce or expiry at settlement",
+    )
+  }
+  // Reserve the nonce past did-jwt's skew window (see JWT_SKEW_SECONDS), so it
+  // cannot be replayed while the proof still verifies but a shorter TTL would
+  // have already pruned the entry.
+  if (!nonceCache.markUsed(nonce, (exp + JWT_SKEW_SECONDS) * 1000)) {
+    throw new IdentityError(
+      "identity_replayed",
+      "Identity proof nonce was already used",
+    )
+  }
+}
+
 export interface VerifyProofOptions {
   /** The seller's DID; the proof's `aud` must match. */
   audience: string
   resolver?: DidResolver
-  nonceCache?: NonceCache
-  /**
-   * Whether to consume the proof's nonce. The x402 flow sends the same proof
-   * twice (the unpaid request that earns the 402 challenge, then the paid
-   * retry), so the nonce is only consumed on requests that carry a payment -
-   * the ones that can reach settlement.
-   */
-  consumeNonce?: boolean
 }
 
 export interface VerifiedIdentity {
@@ -205,19 +236,16 @@ export interface VerifiedIdentity {
 
 /**
  * Verify an identity proof: resolve the issuer's did:web document, check the
- * JWT signature against its published keys, and enforce aud, exp and nonce
- * single-use. Throws IdentityError with a stable rejection code.
+ * JWT signature against its published keys, and enforce aud, exp and the
+ * presence of a nonce. Throws IdentityError with a stable rejection code. The
+ * nonce's single-use is enforced separately, at settlement, via
+ * consumeProofNonce, so an unpaid or non-settling request never burns it.
  */
 export async function verifyIdentityProof(
   jwt: string | undefined,
   options: VerifyProofOptions,
 ): Promise<VerifiedIdentity> {
-  const {
-    audience,
-    resolver = getDidResolver(),
-    nonceCache,
-    consumeNonce = true,
-  } = options
+  const { audience, resolver = getDidResolver() } = options
   if (!jwt) {
     throw new IdentityError("identity_missing", "No identity proof provided")
   }
@@ -277,18 +305,6 @@ export async function verifyIdentityProof(
     )
   }
 
-  if (nonceCache && consumeNonce) {
-    // Reserve the nonce past did-jwt's skew window, so it cannot be replayed
-    // in the interval where the proof still verifies but a shorter TTL would
-    // have already pruned the entry.
-    const expiresAtMs = (exp + JWT_SKEW_SECONDS) * 1000
-    if (!nonceCache.markUsed(nonce, expiresAtMs)) {
-      throw new IdentityError(
-        "identity_replayed",
-        "Identity proof nonce was already used",
-      )
-    }
-  }
   return { did: issuer, nonce }
 }
 

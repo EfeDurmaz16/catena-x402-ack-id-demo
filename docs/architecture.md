@@ -63,9 +63,15 @@ wallet.
 ## Nonce rules
 
 x402 sends the same proof twice: an unpaid request that earns the 402, then a
-paid retry. Only payment-bearing requests consume the nonce; a second paid use
-is rejected 403 before the payment layer. Two hardening rules (see
-`JWT_SKEW_SECONDS`, `MAX_PROOF_LIFETIME_SECONDS` in `src/identity.ts`):
+paid retry. The nonce is consumed exactly once, at settlement: the payment hook
+(`consumeProofNonce`) marks it used only after the facilitator has verified the
+payment and it is bound to the paying wallet, immediately before settle. A
+second settleable use of the same proof is aborted before settle (403
+`identity_replayed`). Consuming at settlement rather than on payment-header
+presence means a request that never settles - an unpaid probe, an undecodable
+payment, a payment from the wrong wallet - cannot burn a legitimate proof's
+nonce. Two hardening rules (see `JWT_SKEW_SECONDS`, `MAX_PROOF_LIFETIME_SECONDS`
+in `src/identity.ts`):
 
 - A proof must carry a bounded `exp`. did-jwt skips its expiry check when
   `exp` is absent, so a non-expiring proof would verify forever and its nonce
@@ -73,10 +79,9 @@ is rejected 403 before the payment layer. Two hardening rules (see
 - The nonce is reserved until `exp` plus did-jwt's ~300s clock skew. A shorter
   reservation would be pruned while the proof still verifies.
 
-Known limit: the nonce is consumed on payment-header presence, not on a
-validated payment. An attacker who captures an unspent proof (requires no TLS)
-can burn its nonce; no money moves, the victim re-mints. The cache is
-in-memory, single-instance scope.
+The binding check runs before nonce consumption on purpose: a proof paired with
+someone else's payment is rejected without burning the real holder's nonce. The
+cache is in-memory, single-instance scope.
 
 ## Payment leg
 
@@ -119,11 +124,12 @@ Real gaps a production version would close; called out so they are choices,
 not oversights.
 
 - **At-most-once nonce, no settlement reconciliation.** The nonce is consumed
-  when a payment header is present, before the payment is decoded or settled.
-  A garbage payment burns a valid proof (harmless: re-mint), but if settlement
-  succeeds and the response is then lost, retrying the same proof is rejected
-  rather than reconciled, a charge-without-delivery path. Production needs an
-  idempotency key derived from the payment authorization.
+  at settlement, so a payment that never settles no longer burns the proof. The
+  remaining gap: if settlement succeeds and the response is then lost, retrying
+  the same proof is rejected as a replay rather than reconciled, a
+  charge-without-delivery path. Production needs an idempotency key derived from
+  the payment authorization so a retried settlement converges instead of
+  double-charging or hard-failing.
 - **Single process.** The nonce cache is in-memory, so replay protection does
   not hold across replicas or restarts. A shared store (Redis) keyed on the
   nonce is the production form.
