@@ -94,7 +94,7 @@ try {
   // Close the loop: confirm the money actually reached the Catena account
   // on-chain, rather than trusting the facilitator's response. Only the valid
   // scenario settles, and only when the seller pays a real address.
-  let onChainOk = true
+  let onChainConfirmed = false
   if (result.settlement?.transaction && config.SELLER_PAY_TO_ADDRESS) {
     const onchain = await verifySettlement({
       txHash: result.settlement.transaction as `0x${string}`,
@@ -109,17 +109,18 @@ try {
       )
       return null
     })
-    if (onchain === null) {
-      onChainOk = false
-    } else if (onchain.status === "confirmed") {
+    if (onchain?.status === "confirmed") {
       console.log(
         `On-chain:     ${onchain.settlement.amount} atomic USDC confirmed to ${onchain.settlement.to} (block ${onchain.settlement.block})`,
       )
       console.log(
         `Loop closed:  confirmed on-chain to your Catena deposit address; the Catena console shows whether it credited as an incoming deposit.`,
       )
-    } else {
-      console.log(`On-chain:     not confirmed (${onchain.reason})`)
+      onChainConfirmed = true
+    } else if (onchain?.status === "unavailable") {
+      console.log(
+        `On-chain:     not confirmed (${onchain.reason}); rerun to confirm`,
+      )
     }
   }
 
@@ -127,7 +128,7 @@ try {
     scenario === "valid"
       ? result.status === 200 &&
         result.settlement?.success === true &&
-        onChainOk
+        onChainConfirmed
       : (result.status === 401 || result.status === 403) &&
         facilitator.verifyCalls === 0 &&
         facilitator.settleCalls === 0

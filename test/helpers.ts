@@ -16,12 +16,19 @@ import type { Server } from "node:http"
 
 export const TEST_NETWORK: Network = "eip155:84532"
 export const TEST_PAY_TO = "0x0000000000000000000000000000000000000001"
-export const TEST_PAYER = "0x0000000000000000000000000000000000000002"
+
+/** The payer the real facilitator would report: the signed EIP-3009 `from`. */
+function payloadPayer(payload: PaymentPayload): string | undefined {
+  const inner = (payload.payload as { authorization?: { from?: unknown } })
+    .authorization?.from
+  return typeof inner === "string" ? inner : undefined
+}
 
 /**
  * Facilitator test double: records every verify/settle invocation and
  * approves everything, so tests can assert exactly when settlement logic is
- * (and is not) reached without touching any network.
+ * (and is not) reached without touching any network. It echoes the payment's
+ * own signed payer, like the real facilitator, rather than a fixed constant.
  */
 export class FakeFacilitatorClient implements FacilitatorClient {
   readonly verifyCalls: PaymentPayload[] = []
@@ -32,7 +39,8 @@ export class FakeFacilitatorClient implements FacilitatorClient {
     _requirements: PaymentRequirements,
   ): Promise<VerifyResponse> {
     this.verifyCalls.push(payload)
-    return Promise.resolve({ isValid: true, payer: TEST_PAYER })
+    const payer = payloadPayer(payload)
+    return Promise.resolve({ isValid: true, ...(payer ? { payer } : {}) })
   }
 
   settle(
@@ -40,11 +48,12 @@ export class FakeFacilitatorClient implements FacilitatorClient {
     _requirements: PaymentRequirements,
   ): Promise<SettleResponse> {
     this.settleCalls.push(payload)
+    const payer = payloadPayer(payload)
     return Promise.resolve({
       success: true,
       transaction: "0xtest-settlement-transaction",
       network: TEST_NETWORK,
-      payer: TEST_PAYER,
+      ...(payer ? { payer } : {}),
     })
   }
 

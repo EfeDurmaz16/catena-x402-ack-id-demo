@@ -44,7 +44,6 @@ export interface BuyerOptions {
 }
 
 export interface BuyerRunResult {
-  scenario: Scenario
   buyerDid: string
   status: number
   body: unknown
@@ -133,7 +132,6 @@ export async function runBuyer(
     const body: unknown = await response.json().catch(() => undefined)
     const settlementHeader = response.headers.get("PAYMENT-RESPONSE")
     const result: BuyerRunResult = {
-      scenario,
       buyerDid: identity.did,
       status: response.status,
       body,

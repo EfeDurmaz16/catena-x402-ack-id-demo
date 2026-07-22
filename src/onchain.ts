@@ -95,19 +95,23 @@ export async function verifySettlement(
     logs: receipt.logs,
     eventName: "Transfer",
   })
-  const match = transfers.find(
+  const toExpected = transfers.filter(
     (log) =>
       getAddress(log.address) === getAddress(token) &&
       getAddress(log.args.to) === getAddress(expectedTo),
   )
-  if (!match) {
+  if (toExpected.length === 0) {
     throw new Error(
       `No USDC transfer to ${expectedTo} found in settlement ${txHash}`,
     )
   }
-  if (match.args.value !== expectedAmount) {
+  // Match on amount too: a receipt can carry several transfers to the same
+  // address, and only the one for the expected amount confirms the settlement.
+  const match = toExpected.find((log) => log.args.value === expectedAmount)
+  if (!match) {
+    const amounts = toExpected.map((log) => log.args.value).join(", ")
     throw new Error(
-      `Settlement amount mismatch: on-chain ${match.args.value} != expected ${expectedAmount}`,
+      `Settlement amount mismatch: no transfer of ${expectedAmount} to ${expectedTo} (saw ${amounts})`,
     )
   }
 

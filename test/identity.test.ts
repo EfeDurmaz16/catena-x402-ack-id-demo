@@ -67,6 +67,17 @@ describe("config", () => {
       loadConfig({ ENDPOINT_PRICE_USD: "$0.001" }).ENDPOINT_PRICE_USD,
     ).toBe("$0.001")
   })
+
+  it("treats empty optional env values as absent (copied .env.example)", () => {
+    // A fresh `cp .env.example .env` leaves these empty; empty must mean unset,
+    // not an invalid address/key, or the keyless demos fail at startup.
+    const config = loadConfig({
+      SELLER_PAY_TO_ADDRESS: "",
+      BUYER_EVM_PRIVATE_KEY: "",
+    })
+    expect(config.SELLER_PAY_TO_ADDRESS).toBeUndefined()
+    expect(config.BUYER_EVM_PRIVATE_KEY).toBeUndefined()
+  })
 })
 
 describe("amount-cap authorization stub", () => {

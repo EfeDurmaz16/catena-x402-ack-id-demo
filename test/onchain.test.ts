@@ -71,6 +71,19 @@ describe("verifySettlement", () => {
     }
   })
 
+  it("confirms the right transfer when the receipt carries several to the address", async () => {
+    const client = clientReturning({
+      status: "0x1",
+      blockNumber: "0x2a5f2b8",
+      logs: [transferLog(CATENA, 999n), transferLog(CATENA, 1000n)],
+    })
+    const result = await verifySettlement({ ...opts, client })
+    expect(result.status).toBe("confirmed")
+    if (result.status === "confirmed") {
+      expect(result.settlement.amount).toBe(1000n)
+    }
+  })
+
   it("throws when the amount does not match", async () => {
     const client = clientReturning({
       status: "0x1",
