@@ -8,8 +8,9 @@
  */
 import { HTTPFacilitatorClient } from "@x402/core/server"
 import { isScenario, runBuyer, SCENARIOS } from "../src/buyer/buyer.js"
-import { loadConfig } from "../src/config.js"
+import { BASE_SEPOLIA_USDC, loadConfig, moneyToMicros } from "../src/config.js"
 import { CountingFacilitatorClient } from "../src/counting-facilitator.js"
+import { verifySettlement } from "../src/onchain.js"
 import { createAmountCapAuthorization } from "../src/seller/authorization.js"
 import { createSeller } from "../src/seller/server.js"
 import type { Server } from "node:http"
@@ -90,9 +91,43 @@ try {
     `\nSettlement adapter calls: verify=${facilitator.verifyCalls} settle=${facilitator.settleCalls}`,
   )
 
+  // Close the loop: confirm the money actually reached the Catena account
+  // on-chain, rather than trusting the facilitator's response. Only the valid
+  // scenario settles, and only when the seller pays a real address.
+  let onChainOk = true
+  if (result.settlement?.transaction && config.SELLER_PAY_TO_ADDRESS) {
+    const onchain = await verifySettlement({
+      txHash: result.settlement.transaction as `0x${string}`,
+      rpcUrl: config.BASE_SEPOLIA_RPC_URL,
+      token: BASE_SEPOLIA_USDC,
+      expectedTo: config.SELLER_PAY_TO_ADDRESS,
+      expectedAmount: moneyToMicros(config.ENDPOINT_PRICE_USD),
+    }).catch((error: unknown) => {
+      // A thrown error means the chain contradicts the claimed settlement.
+      console.error(
+        `\nON-CHAIN MISMATCH: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      return null
+    })
+    if (onchain === null) {
+      onChainOk = false
+    } else if (onchain.status === "confirmed") {
+      console.log(
+        `On-chain:     ${onchain.settlement.amount} atomic USDC confirmed to ${onchain.settlement.to} (block ${onchain.settlement.block})`,
+      )
+      console.log(
+        `Loop closed:  the payment is in your Catena sandbox account; it appears there as a completed incoming deposit.`,
+      )
+    } else {
+      console.log(`On-chain:     not confirmed (${onchain.reason})`)
+    }
+  }
+
   const ok =
     scenario === "valid"
-      ? result.status === 200 && result.settlement?.success === true
+      ? result.status === 200 &&
+        result.settlement?.success === true &&
+        onChainOk
       : (result.status === 401 || result.status === 403) &&
         facilitator.verifyCalls === 0 &&
         facilitator.settleCalls === 0

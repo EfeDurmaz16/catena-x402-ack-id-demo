@@ -43,7 +43,16 @@ const envSchema = z.object({
     .string()
     .regex(/^\$\d+(\.\d{1,6})?$/)
     .default("$0.05"),
+  /**
+   * Public Base Sepolia RPC used to confirm the settlement on-chain (that the
+   * USDC actually reached the Catena account). Read-only, no key required.
+   */
+  BASE_SEPOLIA_RPC_URL: z.url().default("https://sepolia.base.org"),
 })
+
+/** USDC on Base Sepolia (Circle's canonical testnet deployment, 6 decimals). */
+export const BASE_SEPOLIA_USDC =
+  "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as const
 
 /** Parse and validate env config; derives the local seller and buyer URLs. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env) {

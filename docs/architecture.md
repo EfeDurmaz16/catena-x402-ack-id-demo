@@ -85,6 +85,17 @@ x402 v2 (`@x402/*` 2.19.0), `exact` scheme, network `eip155:84532`, USDC
 EIP-3009 `transferWithAuthorization`; the facilitator settles on-chain and the
 response carries the transaction in `PAYMENT-RESPONSE`.
 
+## Confirming the settlement
+
+The facilitator's `PAYMENT-RESPONSE` is a claim; the source of truth for "the
+money reached the Catena account" is the chain. After settlement the demo reads
+the transaction receipt over a public Base Sepolia RPC (`src/onchain.ts`) and
+checks that a USDC `Transfer` for the exact amount went to the seller's Catena
+deposit address. A reverted transaction, a transfer to the wrong address, or
+the wrong amount fails the run; an unreadable receipt (RPC lag) is reported but
+does not fail it, since the facilitator already settled. This uses only a
+public RPC, so it adds no Catena CLI or SDK dependency.
+
 ## Catena surface
 
 The seller's `payTo` is a Catena sandbox account's base-sepolia USDC deposit
