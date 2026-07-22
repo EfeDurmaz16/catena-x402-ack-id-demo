@@ -62,7 +62,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   return {
     ...parsed,
     sellerBaseUrl: `http://localhost:${parsed.SELLER_PORT}`,
-    buyerDidBaseUrl: `http://localhost:${parsed.BUYER_DID_PORT}`,
   }
 }
 

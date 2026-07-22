@@ -11,7 +11,7 @@ import {
 } from "../identity.js"
 import type { Identity } from "../identity.js"
 import type { Authorize } from "./authorization.js"
-import type { DidResolver, DidUri } from "@agentcommercekit/did"
+import type { DidUri } from "@agentcommercekit/did"
 import type { FacilitatorClient } from "@x402/core/server"
 import type { Network } from "@x402/core/types"
 import type { Express, Request, RequestHandler } from "express"
@@ -46,7 +46,6 @@ export interface SellerOptions {
    */
   facilitatorClient: FacilitatorClient
   authorize: Authorize
-  resolver?: DidResolver
 }
 
 export interface Seller {
@@ -99,15 +98,9 @@ function paymentPayer(paymentPayload: unknown): string | undefined {
  * the facilitator (settlement) is never contacted for rejected identities.
  */
 export async function createSeller(options: SellerOptions): Promise<Seller> {
-  const {
-    baseUrl,
-    network,
-    payTo,
-    price,
-    facilitatorClient,
-    authorize,
-    resolver = createSellerResolver(),
-  } = options
+  const { baseUrl, network, payTo, price, facilitatorClient, authorize } =
+    options
+  const resolver = createSellerResolver()
 
   const identity = await createIdentity(baseUrl)
   const nonceCache = new NonceCache()

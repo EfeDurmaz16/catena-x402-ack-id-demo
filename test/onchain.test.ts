@@ -107,9 +107,12 @@ describe("verifySettlement", () => {
   it("reports unavailable when the receipt cannot be read", async () => {
     const client = createPublicClient({
       chain: baseSepolia,
-      transport: custom({
-        request: () => Promise.reject(new Error("rpc down")),
-      }),
+      // retryCount 0: without it viem retries each call ~3x with backoff, so
+      // the intended fast fail would take seconds.
+      transport: custom(
+        { request: () => Promise.reject(new Error("rpc down")) },
+        { retryCount: 0 },
+      ),
     })
     const result = await verifySettlement({
       ...opts,

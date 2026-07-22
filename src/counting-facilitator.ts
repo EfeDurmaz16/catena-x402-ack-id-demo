@@ -3,8 +3,9 @@ import type { PaymentPayload, PaymentRequirements } from "@x402/core/types"
 
 /**
  * Decorator around any FacilitatorClient that counts verify/settle calls.
- * Used by the demo scripts and tests to prove that rejected identities never
- * reach the settlement adapter.
+ * The demo scripts wrap the real facilitator in it to show that rejected
+ * identities never reach the settlement adapter. (Tests use the recording
+ * FakeFacilitatorClient in test/helpers.ts instead.)
  */
 export class CountingFacilitatorClient implements FacilitatorClient {
   verifyCalls = 0
