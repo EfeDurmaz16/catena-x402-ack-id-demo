@@ -116,7 +116,7 @@ try {
         `On-chain:     ${onchain.settlement.amount} atomic USDC confirmed to ${onchain.settlement.to} (block ${onchain.settlement.block})`,
       )
       console.log(
-        `Loop closed:  the payment is in your Catena sandbox account; it appears there as a completed incoming deposit.`,
+        `Loop closed:  confirmed on-chain to your Catena deposit address; the Catena console shows whether it credited as an incoming deposit.`,
       )
     } else {
       console.log(`On-chain:     not confirmed (${onchain.reason})`)

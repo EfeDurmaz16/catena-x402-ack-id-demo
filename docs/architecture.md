@@ -88,13 +88,21 @@ response carries the transaction in `PAYMENT-RESPONSE`.
 ## Confirming the settlement
 
 The facilitator's `PAYMENT-RESPONSE` is a claim; the source of truth for "the
-money reached the Catena account" is the chain. After settlement the demo reads
-the transaction receipt over a public Base Sepolia RPC (`src/onchain.ts`) and
-checks that a USDC `Transfer` for the exact amount went to the seller's Catena
-deposit address. A reverted transaction, a transfer to the wrong address, or
-the wrong amount fails the run; an unreadable receipt (RPC lag) is reported but
-does not fail it, since the facilitator already settled. This uses only a
-public RPC, so it adds no Catena CLI or SDK dependency.
+money reached the Catena deposit address" is the chain. After settlement the
+demo reads the transaction receipt over a public Base Sepolia RPC
+(`src/onchain.ts`) and checks that a USDC `Transfer` for the exact amount went
+to the seller's Catena deposit address. A reverted transaction, a transfer to
+the wrong address, or the wrong amount fails the run; an unreadable receipt
+(RPC lag) is reported but does not fail it, since the facilitator already
+settled. This uses only a public RPC, so it adds no Catena CLI or SDK
+dependency.
+
+One precision: arriving at the address is not the same as being credited to the
+account. A payments platform can run a receive-policy guard (allowed
+tokens/senders) that lets a non-matching transfer settle on-chain but holds it
+rather than crediting the balance. The on-chain check proves arrival; the
+Catena ledger (console or account read) is the authority on crediting. For this
+demo's own USDC transfer the two agree.
 
 ## Catena surface
 
