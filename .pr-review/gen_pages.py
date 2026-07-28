@@ -305,7 +305,7 @@ pages.append({"n": 7, "title": "Money discipline, configuration and CI", "kicker
 <ul>
 <li>Nonce cache is in-memory: single seller instance scope, seam documented for a shared store.</li>
 <li>Authorization is a stub by contract: verified DID plus an amount cap, nothing else. It must not grow into a policy engine.</li>
-<li>The buyer pays with its own testnet wallet. Paying out of a Catena account is blocked today because the Catena CLI's x402 command cannot attach an identity header; the gap is reported to the Catena team as product feedback.</li>
+<li>The scripted buyer pays with its own testnet wallet. A Catena account can also be the buyer since CLI v0.3.0 added <code>--header</code> (shipped the same day it was reported as feedback): <code>catena x402 --header "Authorization: Bearer &lt;proof&gt;"</code> carries the ACK-ID proof on both the probe and the paid retry. Two constraints, both correct-by-design: the Catena API refuses loopback URLs (the seller needs a public https origin, e.g. a tunnel), and the challenge's payTo must already be a saved counterparty in the account's allowlist. Both behaviours were verified against v0.3.0 and reported as follow-up feedback.</li>
 </ul>
 <div class="callout risk"><div class="lb">Risk &amp; blast radius</div>The demo depends on the public x402.org facilitator staying live for base-sepolia. If it goes away, the facilitator URL is env-injected and any compatible facilitator (including a future Catena one) slots in without code changes.</div>
 """})
