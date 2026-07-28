@@ -2,18 +2,22 @@
 
 An [x402](https://github.com/x402-foundation/x402) seller that verifies an [ACK-ID](https://www.agentcommercekit.com) identity proof before any payment logic runs, then settles USDC on Base Sepolia. No verified identity, no payment. Tests assert the settlement adapter is never invoked for rejected identities.
 
-```
-Buyer                              Seller
-  |  GET /api/premium                 |
-  |  Authorization: Bearer <ACK-ID>   |
-  |---------------------------------->|  1. resolve did:web, verify JWT
-  |                                   |  2. authorization stub (amount cap)
-  |          402 + PAYMENT-REQUIRED   |  3. x402 challenge
-  |<----------------------------------|
-  |  retry + PAYMENT-SIGNATURE        |
-  |---------------------------------->|  1-2 again, then verify + settle
-  |          200 + PAYMENT-RESPONSE   |
-  |<----------------------------------|
+```mermaid
+flowchart LR
+  R([GET /api/premium]) --> G{"ACK-ID proof valid?<br/>did:web + JWT"}
+  G -- no --> X1["401 or 403<br/>nothing charged"]
+  G -- yes --> A{"Authorized?<br/>amount cap stub"}
+  A -- no --> X2[403 authorization_denied]
+  A -- yes --> P["x402 middleware<br/>402 challenge, then pay"]
+  P --> H([Premium resource])
+
+  X1 -.- N1[/facilitator never contacted/]
+  X2 -.- N1
+
+  classDef gate stroke-width:2px
+  class G,A gate
+  classDef reject stroke-dasharray: 4 3
+  class X1,X2,N1 reject
 ```
 
 Unverified identities (missing, malformed, expired, mismatched) stop at step 1

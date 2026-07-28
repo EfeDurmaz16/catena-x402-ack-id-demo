@@ -40,6 +40,27 @@ startup, never on a request, so it is not part of the settlement path. The
 demo scripts wrap the real facilitator in a counting decorator and print the
 counts.
 
+```mermaid
+flowchart TB
+  subgraph gate["Identity gate: before any payment"]
+    direction LR
+    M[missing] --> R1["401 or 403<br/>verify 0, settle 0"]
+    E[expired] --> R1
+    K[wrong key] --> R1
+    AU[wrong audience] --> R1
+    NW[not did:web] --> R1
+    CAP[over cap] --> R1
+  end
+
+  subgraph hook["Payment hook: after verify, before settle"]
+    direction LR
+    RP[replayed nonce] --> R2["402 from the payment layer<br/>verify ran, settle 0"]
+    PM[payer not bound to proof] --> R2
+  end
+
+  gate --> hook
+```
+
 ## The identity proof
 
 A did-jwt JWT (ES256K) built with the agentcommercekit libraries:
@@ -96,6 +117,30 @@ someone else's payment is rejected without burning the real holder's nonce. The
 cache is in-memory, single-instance scope.
 
 ## Payment leg
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant B as Buyer agent
+  participant S as Seller
+  participant D as Buyer did:web host
+  participant F as Facilitator
+  participant C as Base Sepolia
+
+  B->>S: GET with identity proof
+  S->>D: resolve did:web document
+  D-->>S: public keys
+  S->>S: verify signature, aud, exp
+  S-->>B: 402 challenge
+  B->>S: retry with signed EIP-3009 payment
+  S->>F: verify
+  F-->>S: valid, payer address
+  S->>S: payer bound to proof? consume nonce
+  S->>F: settle
+  F->>C: USDC transfer
+  S-->>B: 200 premium resource
+  B->>C: read receipt: exact amount, sender, recipient
+```
 
 x402 v2 (`@x402/*` 2.19.0), `exact` scheme, network `eip155:84532`, USDC
 `0x036CbD53842c5426634e7929541eC2318f3dCF7e`. The buyer signs a gasless
