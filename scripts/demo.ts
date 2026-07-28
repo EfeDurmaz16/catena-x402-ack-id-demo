@@ -110,6 +110,10 @@ try {
       // payer: a facilitator-supplied sender would make the check circular.
       expectedFrom: privateKeyToAccount(config.BUYER_EVM_PRIVATE_KEY).address,
       expectedAmount: moneyToMicros(config.ENDPOINT_PRICE_USD),
+      // Public RPCs lag behind the facilitator's settlement by seconds; poll
+      // for ~30s so a genuinely settled payment is not reported as a failure
+      // (rerunning would spend real USDC again).
+      attempts: 20,
     }).catch((error: unknown) => {
       // A thrown error means the chain contradicts the claimed settlement.
       console.error(

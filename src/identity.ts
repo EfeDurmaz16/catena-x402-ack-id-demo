@@ -17,16 +17,29 @@ export interface Identity {
 
 /**
  * DID resolver for the seller. did:web resolution fetches the URL named in the
- * proof before the signature is checked, so bound the fetch: a hostile or dead
- * host cannot hang the seller, and HTTP is allowed only for local hosts.
- * ponytail: a response-size cap would need body streaming; left for production.
+ * proof before the signature is checked, so the fetch is bounded twice over:
+ *
+ * - A timeout, so a hostile or dead host cannot hang the seller.
+ * - `redirect: "error"`. The library applies its http/https allowlist to the
+ *   first URL only, and Node follows redirects by default, so without this a
+ *   did:web on https could redirect the seller into plain http or an internal
+ *   address. Legitimate did:web documents are served directly. (Reported
+ *   upstream; the library default should be the safe one.)
+ *
+ * ponytail: a response-size cap would need body streaming, and blocking
+ * private address ranges outright needs DNS-level pinning; both are noted in
+ * docs/architecture.md as production work, not demo scope.
  */
 export function createSellerResolver(timeoutMs = 5000): DidResolver {
   return getDidResolver({
     webOptions: {
       allowedHttpHosts: ["localhost", "127.0.0.1", "0.0.0.0"],
       fetch: (input, init) =>
-        fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) }),
+        fetch(input, {
+          ...init,
+          redirect: "error",
+          signal: AbortSignal.timeout(timeoutMs),
+        }),
     },
   })
 }

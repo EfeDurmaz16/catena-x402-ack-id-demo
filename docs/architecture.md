@@ -145,6 +145,18 @@ not oversights.
 - **Single process.** The nonce cache is in-memory, so replay protection does
   not hold across replicas or restarts. A shared store (Redis) keyed on the
   nonce is the production form.
+- **did:web resolution reaches out before the signature is checked.** The
+  seller fetches the URL a proof names, so an issuer chooses an outbound
+  request. Two bounds are in place: a 5s timeout, and `redirect: "error"`
+  (the library's http/https allowlist applies to the first URL only, so a
+  redirect would otherwise carry the seller to plain http or an internal
+  address; this is reported upstream so the safe behavior becomes the
+  default). A production deployment behind an internal network should also
+  resolve the hostname first and refuse private, loopback and link-local
+  ranges, pinning the connection to the resolved address so DNS cannot
+  change under it, and cap the response body size. Those need connection-
+  level control that would dominate a demo whose subject is identity before
+  payment.
 - **No request rate limiting.** The seller does not cap request rate, so a
   caller can hammer the endpoint unbounded (each request costs a did:web
   resolution, bounded by the 5s fetch timeout, and a nonce-cache lookup,

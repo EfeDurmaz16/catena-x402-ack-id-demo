@@ -1,3 +1,4 @@
+import { createServer } from "node:http"
 import { createJwt, createJwtSigner } from "@agentcommercekit/jwt"
 import { generateKeypair } from "@agentcommercekit/keys"
 import { afterEach, describe, expect, it } from "vitest"
@@ -6,6 +7,7 @@ import { loadConfig, moneyToMicros } from "../src/config.js"
 import {
   consumeProofNonce,
   createIdentity,
+  createSellerResolver,
   createIdentityProof,
   IdentityError,
   NonceCache,
@@ -13,6 +15,7 @@ import {
 } from "../src/identity.js"
 import { createAmountCapAuthorization } from "../src/seller/authorization.js"
 import type { DidHost } from "../src/buyer/did-host.js"
+import type { AddressInfo } from "node:net"
 import type { Identity } from "../src/identity.js"
 
 const SELLER_DID = "did:web:seller.example"
@@ -243,5 +246,51 @@ describe("NonceCache TTL", () => {
     expect(cache.markUsed("n1", now + 60_000)).toBe(true)
     // Now it is reserved into the future: an immediate reuse is blocked.
     expect(cache.markUsed("n1", now + 60_000)).toBe(false)
+  })
+})
+
+describe("did:web resolution safety", () => {
+  it("refuses to follow a redirect during DID resolution", async () => {
+    // The library applies its http/https allowlist to the FIRST url only and
+    // Node follows redirects by default, so without redirect: "error" a
+    // did:web could bounce the seller to plain http or an internal address.
+    // Legitimate documents are served directly, so refusing costs nothing.
+    let targetHits = 0
+    const target = createServer((_req, res) => {
+      targetHits += 1
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ id: "did:web:whatever" }))
+    })
+    await new Promise<void>((resolve) => target.listen(0, resolve))
+    const targetPort = (target.address() as AddressInfo).port
+
+    const redirector = createServer((_req, res) => {
+      res.writeHead(302, {
+        location: `http://127.0.0.1:${targetPort}/.well-known/did.json`,
+      })
+      res.end()
+    })
+    await new Promise<void>((resolve) => redirector.listen(0, resolve))
+    const redirectorPort = (redirector.address() as AddressInfo).port
+
+    try {
+      const resolver = createSellerResolver()
+      const resolution = await resolver.resolve(
+        `did:web:localhost%3A${redirectorPort}`,
+      )
+      expect(resolution.didResolutionMetadata.error).toBe("notFound")
+      expect(targetHits).toBe(0) // the redirect was never followed
+    } finally {
+      await new Promise<void>((resolve) => {
+        target.close(() => {
+          resolve()
+        })
+      })
+      await new Promise<void>((resolve) => {
+        redirector.close(() => {
+          resolve()
+        })
+      })
+    }
   })
 })

@@ -52,8 +52,7 @@ DID does not publish, the impersonation case), and both ending with
 
 ## Scene 4 - Close (30s)
 
-Show `pnpm test` output (37 tests) briefly, then the review notebook at
-v1.efebarandurmaz.com for one beat. Closing line:
+Show `pnpm test` output briefly. Closing line:
 
 > Everything here consumes public surfaces only: the agentcommercekit
 > libraries, the public x402 flow, and a sandbox account as the receiving
