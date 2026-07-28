@@ -30,6 +30,10 @@ export interface VerifySettlementOptions {
   token: string
   /** The address that must have received the USDC (the Catena account). */
   expectedTo: string
+  /** The wallet that must have sent it (the buyer). Without this, a stale
+   * transaction from an earlier run (same price, same payTo) or any other
+   * buyer paying that address would confirm as this run's settlement. */
+  expectedFrom: string
   /** The exact amount that must have been transferred (atomic USDC units). */
   expectedAmount: bigint
   /** Injected for tests; defaults to an RPC client for `rpcUrl`. */
@@ -61,6 +65,7 @@ export async function verifySettlement(
     rpcUrl,
     token,
     expectedTo,
+    expectedFrom,
     expectedAmount,
     client = createPublicClient({
       chain: baseSepolia,
@@ -98,11 +103,12 @@ export async function verifySettlement(
   const toExpected = transfers.filter(
     (log) =>
       getAddress(log.address) === getAddress(token) &&
+      getAddress(log.args.from) === getAddress(expectedFrom) &&
       getAddress(log.args.to) === getAddress(expectedTo),
   )
   if (toExpected.length === 0) {
     throw new Error(
-      `No USDC transfer to ${expectedTo} found in settlement ${txHash}`,
+      `No USDC transfer from ${expectedFrom} to ${expectedTo} found in settlement ${txHash}`,
     )
   }
   // Match on amount too: a receipt can carry several transfers to the same
@@ -111,7 +117,7 @@ export async function verifySettlement(
   if (!match) {
     const amounts = toExpected.map((log) => log.args.value).join(", ")
     throw new Error(
-      `Settlement amount mismatch: no transfer of ${expectedAmount} to ${expectedTo} (saw ${amounts})`,
+      `Settlement amount mismatch: no transfer of ${expectedAmount} from ${expectedFrom} to ${expectedTo} (saw ${amounts})`,
     )
   }
 

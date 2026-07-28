@@ -21,14 +21,24 @@ unreachable for rejected requests.
 ## Proven, not asserted
 
 The seller receives its `FacilitatorClient` (verify/settle/getSupported) by
-injection. Tests inject a recording fake and assert, for every rejected
-scenario (missing, malformed, expired, mismatched key, wrong audience,
-non-did:web, over-cap, replayed nonce) and for each of those again with a
-payment header present: the response is 401/403 and zero `verify`/`settle`
-calls were made. (`getSupported` is capability discovery: the x402 middleware
-calls it once at startup, never on a request, so it is not part of the
-settlement path.) The demo scripts wrap the real facilitator in a counting
-decorator and print the counts.
+injection. Tests inject a recording fake and assert the exact claim for each
+class of rejection:
+
+- **Rejected at the identity gate** (missing, malformed, expired, mismatched
+  key, wrong audience, non-did:web, over-cap): the response is 401/403 and
+  both `verify` and `settle` are zero. Each of these is also driven a second
+  time with a payment header present, so a regression that skips the gate
+  when a payment is attached cannot pass unnoticed.
+- **Rejected at the payment hook** (replayed nonce, payer not bound to the
+  proof): the request carries a real payment, so the facilitator's `verify`
+  does run; the hook then aborts and `settle` never does. The replay test
+  asserts exactly this shape - two verifies, one settle - and the response
+  is the payment layer's own 402, not a 401/403.
+
+`getSupported` is capability discovery: the x402 middleware calls it once at
+startup, never on a request, so it is not part of the settlement path. The
+demo scripts wrap the real facilitator in a counting decorator and print the
+counts.
 
 ## The identity proof
 
@@ -66,8 +76,10 @@ x402 sends the same proof twice: an unpaid request that earns the 402, then a
 paid retry. The nonce is consumed exactly once, at settlement: the payment hook
 (`consumeProofNonce`) marks it used only after the facilitator has verified the
 payment and it is bound to the paying wallet, immediately before settle. A
-second settleable use of the same proof is aborted before settle (403
-`identity_replayed`). Consuming at settlement rather than on payment-header
+second settleable use of the same proof is aborted before settle: the hook
+returns `identity_replayed`, and because the abort happens inside the x402
+layer the client sees a fresh 402 challenge rather than a 401/403.
+Consuming at settlement rather than on payment-header
 presence means a request that never settles - an unpaid probe, an undecodable
 payment, a payment from the wrong wallet - cannot burn a legitimate proof's
 nonce. Two hardening rules (see `JWT_SKEW_SECONDS`, `MAX_PROOF_LIFETIME_SECONDS`

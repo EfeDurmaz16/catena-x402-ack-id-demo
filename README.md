@@ -16,7 +16,11 @@ Buyer                              Seller
   |<----------------------------------|
 ```
 
-Rejected identities (missing, malformed, expired, mismatched, replayed) stop at step 1 with 401/403. [docs/architecture.md](docs/architecture.md) explains why the ordering holds.
+Unverified identities (missing, malformed, expired, mismatched) stop at step 1
+with 401/403, before any payment logic runs. A replayed proof is different: it
+carries a real payment, so it is caught at the payment hook after the
+facilitator verifies and before anything settles.
+[docs/architecture.md](docs/architecture.md) explains why the ordering holds.
 
 ## Quickstart
 

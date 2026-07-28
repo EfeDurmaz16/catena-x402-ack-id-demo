@@ -11,6 +11,7 @@ import { isScenario, runBuyer, SCENARIOS } from "../src/buyer/buyer.js"
 import { BASE_SEPOLIA_USDC, loadConfig, moneyToMicros } from "../src/config.js"
 import { CountingFacilitatorClient } from "../src/counting-facilitator.js"
 import { verifySettlement } from "../src/onchain.js"
+import { privateKeyToAccount } from "viem/accounts"
 import { createAmountCapAuthorization } from "../src/seller/authorization.js"
 import { createSeller } from "../src/seller/server.js"
 import type { Server } from "node:http"
@@ -95,12 +96,19 @@ try {
   // on-chain, rather than trusting the facilitator's response. Only the valid
   // scenario settles, and only when the seller pays a real address.
   let onChainConfirmed = false
-  if (result.settlement?.transaction && config.SELLER_PAY_TO_ADDRESS) {
+  if (
+    result.settlement?.transaction &&
+    config.SELLER_PAY_TO_ADDRESS &&
+    config.BUYER_EVM_PRIVATE_KEY
+  ) {
     const onchain = await verifySettlement({
       txHash: result.settlement.transaction as `0x${string}`,
       rpcUrl: config.BASE_SEPOLIA_RPC_URL,
       token: BASE_SEPOLIA_USDC,
       expectedTo: config.SELLER_PAY_TO_ADDRESS,
+      // Derived from our own key, never from the facilitator's reported
+      // payer: a facilitator-supplied sender would make the check circular.
+      expectedFrom: privateKeyToAccount(config.BUYER_EVM_PRIVATE_KEY).address,
       expectedAmount: moneyToMicros(config.ENDPOINT_PRICE_USD),
     }).catch((error: unknown) => {
       // A thrown error means the chain contradicts the claimed settlement.

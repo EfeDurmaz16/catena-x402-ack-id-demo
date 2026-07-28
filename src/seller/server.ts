@@ -162,6 +162,11 @@ export async function createSeller(options: SellerOptions): Promise<Seller> {
   const resourceServer = new x402ResourceServer(facilitatorClient)
     .register(network, new ExactEvmScheme())
     .onAfterVerify((ctx) => {
+      // x402 runs this hook with the facilitator's result whether or not the
+      // payment verified. A rejected payment settles nothing, so it must
+      // consume nothing: otherwise a bogus payment quoting the bound wallet
+      // would burn a valid proof's nonce and deny the real holder.
+      if (!ctx.result.isValid) return Promise.resolve()
       const token = bearerFromTransport(ctx.transportContext)
       const bound = token
         ? readBoundPaymentAddress(token)?.toLowerCase()
@@ -183,14 +188,17 @@ export async function createSeller(options: SellerOptions): Promise<Seller> {
       try {
         consumeProofNonce(token, nonceCache)
       } catch (error) {
-        if (error instanceof IdentityError) {
-          return Promise.resolve({
-            abort: true as const,
-            reason: error.code,
-            message: error.message,
-          })
-        }
-        throw error
+        // x402 swallows a hook throw and settles the payment anyway, so a
+        // failure here must abort explicitly: settling without consuming
+        // the nonce would leave the proof replayable.
+        const identityError = error instanceof IdentityError ? error : undefined
+        return Promise.resolve({
+          abort: true as const,
+          reason: identityError?.code ?? "identity_nonce_check_failed",
+          message:
+            identityError?.message ??
+            "Identity nonce could not be consumed at settlement",
+        })
       }
       return Promise.resolve()
     })

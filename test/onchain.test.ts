@@ -9,7 +9,7 @@ const TX =
 const BUYER = "0xc68b1dc0d7910a5f7a9fe8edeb0d8f33e5a218ee"
 const CATENA = "0x7b597bd9a2440d1a79e96c51733113dc8c8c9521"
 
-function transferLog(to: string, value: bigint) {
+function transferLog(to: string, value: bigint, from?: string) {
   const topics = encodeEventTopics({
     abi: [
       {
@@ -23,7 +23,7 @@ function transferLog(to: string, value: bigint) {
       },
     ],
     eventName: "Transfer",
-    args: { from: BUYER as `0x${string}`, to: to as `0x${string}` },
+    args: { from: (from ?? BUYER) as `0x${string}`, to: to as `0x${string}` },
   })
   return {
     address: BASE_SEPOLIA_USDC,
@@ -53,6 +53,7 @@ const opts = {
   rpcUrl: "http://unused",
   token: BASE_SEPOLIA_USDC,
   expectedTo: CATENA,
+  expectedFrom: BUYER,
   expectedAmount: 1000n,
 }
 
@@ -134,5 +135,42 @@ describe("verifySettlement", () => {
       delayMs: 1,
     })
     expect(result.status).toBe("unavailable")
+  })
+})
+
+describe("settlement attribution", () => {
+  it("rejects a receipt whose transfer came from a different sender", async () => {
+    // A facilitator returning a stale hash from an earlier run (same price,
+    // same payTo) would otherwise confirm as this run's settlement.
+    const client = clientReturning({
+      status: "0x1",
+      blockNumber: "0x2a5f2b8",
+      logs: [
+        transferLog(
+          CATENA,
+          1000n,
+          "0x000000000000000000000000000000000000dead",
+        ),
+      ],
+    })
+    await expect(verifySettlement({ ...opts, client })).rejects.toThrow(
+      /No USDC transfer from/,
+    )
+  })
+
+  it("ignores a transfer of another token to the same address", async () => {
+    const client = clientReturning({
+      status: "0x1",
+      blockNumber: "0x2a5f2b8",
+      logs: [
+        {
+          ...transferLog(CATENA, 1000n),
+          address: "0x0000000000000000000000000000000000000bad",
+        },
+      ],
+    })
+    await expect(verifySettlement({ ...opts, client })).rejects.toThrow(
+      /No USDC transfer from/,
+    )
   })
 })
