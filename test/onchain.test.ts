@@ -6,8 +6,8 @@ import { verifySettlement } from "../src/onchain.js"
 
 const TX =
   "0x0000000000000000000000000000000000000000000000000000000000000abc" as const
-const BUYER = "0xc68b1dc0d7910a5f7a9fe8edeb0d8f33e5a218ee"
-const CATENA = "0x7b597bd9a2440d1a79e96c51733113dc8c8c9521"
+const BUYER = "0x1111111111111111111111111111111111111111"
+const CATENA = "0x2222222222222222222222222222222222222222"
 
 function transferLog(to: string, value: bigint, from?: string) {
   const topics = encodeEventTopics({
