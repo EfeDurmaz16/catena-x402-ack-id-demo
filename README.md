@@ -28,7 +28,8 @@ facilitator verifies and before anything settles.
 
 ## Quickstart
 
-Node >= 22.13, pnpm >= 9.
+Node >= 22.13. This repo pins its package manager (`packageManager: pnpm@11`),
+so run `corepack enable` once and pnpm will match it.
 
 ```sh
 pnpm install
@@ -43,24 +44,49 @@ pnpm demo:mismatched-identity
 pnpm demo:expired-identity
 ```
 
+Each prints the outcome and the settlement-adapter call counts:
+
+```
+Seller:   http://localhost:4021 (did:web:localhost%3A4021)
+Network:  eip155:84532, price $0.001
+Scenario: missing-identity
+
+Buyer DID:    did:web:localhost%3A4022
+HTTP status:  401
+Response:     {"error":"identity_missing","message":"No identity proof provided"}
+
+Settlement adapter calls: verify=0 settle=0
+
+PASS: identity rejected before any payment; settlement adapter never invoked.
+```
+
+`verify=0 settle=0` is the claim: the payment infrastructure was never asked
+anything for this request.
+
 For the real payment against the Catena sandbox:
 
-1. **Catena sandbox account.** Sign in at [app.catena.com](https://app.catena.com) and create (or open) a sandbox agent. In the sandbox, open the account and copy its **Base Sepolia USDC deposit address** (the console shows it; the same value the API's `get_deposit_address` returns). This is where the payment will land. Set it as `SELLER_PAY_TO_ADDRESS` in `.env`.
-2. **Buyer wallet.** `pnpm exec tsx scripts/new-wallet.ts`, then fund the printed address with Base Sepolia USDC at [faucet.circle.com](https://faucet.circle.com) (select Base Sepolia). No ETH needed; transfers are gasless EIP-3009 and the facilitator pays gas. Set the printed key as `BUYER_EVM_PRIVATE_KEY`.
+1. **Catena sandbox account.** Sign in at [app.catena.com](https://app.catena.com), open (or create) a sandbox agent, and copy the account's **Base Sepolia USDC deposit address** (the console shows it; the API's `get_deposit_address` returns the same value). Set it as `SELLER_PAY_TO_ADDRESS` in `.env`: this is where the payment lands.
+2. **Buyer wallet.** `pnpm wallet:new`, then fund the printed address with Base Sepolia USDC at [faucet.circle.com](https://faucet.circle.com) (select Base Sepolia). No ETH needed; transfers are gasless EIP-3009 and the facilitator pays gas. Set the printed key as `BUYER_EVM_PRIVATE_KEY`. Testnet only: never put a key that holds real funds in `.env`.
 3. `pnpm demo:valid` completes a ~$0.001 USDC payment, then reads the chain over a public RPC to confirm the exact amount reached your Catena deposit address (the "Loop closed" line). The deposit also appears in the Catena console as a completed incoming transaction.
 
-Nothing here needs the Catena CLI or SDK: the demo consumes public surfaces only (the sandbox account as the receiving bank, a public facilitator, and a public RPC for confirmation).
+Runs against public surfaces only: the sandbox account as the receiving bank, a
+public facilitator, and a public RPC for confirmation. No Catena CLI or SDK.
+
+The `@x402/*` packages are pinned to exact versions, no `^`. They implement the
+wire protocol on the money path, so a minor bump is something to adopt
+deliberately and test, not to pick up silently on a fresh install.
 
 ## Commands
 
-| Command                                      | Result                                                    |
-| -------------------------------------------- | --------------------------------------------------------- |
-| `pnpm demo:valid`                            | Verified identity, real USDC settlement, protected result |
-| `pnpm demo:missing-identity`                 | 401 before any payment logic                              |
-| `pnpm demo:mismatched-identity`              | 403 before any payment logic                              |
-| `pnpm demo:expired-identity`                 | 401 before any payment logic                              |
-| `pnpm seller`                                | Seller service standalone                                 |
-| `pnpm test` / `pnpm lint` / `pnpm typecheck` | Checks                                                    |
+| Command                                             | Result                                                    |
+| --------------------------------------------------- | --------------------------------------------------------- |
+| `pnpm demo:valid`                                   | Verified identity, real USDC settlement, protected result |
+| `pnpm demo:missing-identity`                        | 401 before any payment logic                              |
+| `pnpm demo:mismatched-identity`                     | 403 before any payment logic                              |
+| `pnpm demo:expired-identity`                        | 401 before any payment logic                              |
+| `pnpm seller`                                       | Seller service standalone                                 |
+| `pnpm wallet:new`                                   | Throwaway Base Sepolia wallet for the buyer               |
+| `pnpm test` / `lint` / `typecheck` / `format:check` | Checks                                                    |
 
 ## Layout
 

@@ -26,17 +26,20 @@ class of rejection:
 
 - **Rejected at the identity gate** (missing, malformed, expired, mismatched
   key, wrong audience, non-did:web, over-cap): the response is 401/403 and
-  both `verify` and `settle` are zero. Each of these is also driven a second
-  time with a payment header present, so a regression that skips the gate
-  when a payment is attached cannot pass unnoticed.
+  both `verify` and `settle` are zero. Three of them (missing, mismatched,
+  expired) are also driven a second time with a payment header present, so a
+  regression that skips the gate when a payment is attached cannot pass
+  unnoticed.
 - **Rejected at the payment hook** (replayed nonce, payer not bound to the
   proof): the request carries a real payment, so the facilitator's `verify`
   does run; the hook then aborts and `settle` never does. The replay test
-  asserts exactly this shape - two verifies, one settle - and the response
+  asserts exactly this shape (two verifies, one settle) and the response
   is the payment layer's own 402, not a 401/403.
 
-`getSupported` is capability discovery: the x402 middleware calls it once at
-startup, never on a request, so it is not part of the settlement path. The
+`getSupported` is capability discovery, not settlement. The middleware starts
+the call when it is constructed and awaits it on the first request to the paid
+route, retrying only if that call failed; `verify` and `settle` never trigger
+it. The
 demo scripts wrap the real facilitator in a counting decorator and print the
 counts.
 
@@ -94,16 +97,20 @@ wallet.
 ## Nonce rules
 
 x402 sends the same proof twice: an unpaid request that earns the 402, then a
-paid retry. The nonce is consumed exactly once, at settlement: the payment hook
-(`consumeProofNonce`) marks it used only after the facilitator has verified the
-payment and it is bound to the paying wallet, immediately before settle. A
-second settleable use of the same proof is aborted before settle: the hook
-returns `identity_replayed`, and because the abort happens inside the x402
-layer the client sees a fresh 402 challenge rather than a 401/403.
-Consuming at settlement rather than on payment-header
-presence means a request that never settles - an unpaid probe, an undecodable
-payment, a payment from the wrong wallet - cannot burn a legitimate proof's
-nonce. Two hardening rules (see `JWT_SKEW_SECONDS`, `MAX_PROOF_LIFETIME_SECONDS`
+paid retry. Three questions decide the design:
+
+- **When is the nonce consumed?** At settlement. The payment hook
+  (`consumeProofNonce`) marks it used only after the facilitator has verified
+  the payment and it is bound to the paying wallet, immediately before settle.
+- **Why not earlier?** A request that never settles (an unpaid probe, an
+  undecodable payment, a payment from the wrong wallet) must not burn a
+  legitimate proof's nonce. Consuming on payment-header presence does exactly
+  that, and denies the real holder.
+- **What does the client see on a replay?** A fresh 402 challenge, not a
+  401/403: the hook returns `identity_replayed` inside the x402 layer, so the
+  rejection is expressed in the payment layer's own terms.
+
+Two hardening rules (see `JWT_SKEW_SECONDS`, `MAX_PROOF_LIFETIME_SECONDS`
 in `src/identity.ts`):
 
 - A proof must carry a bounded `exp`. did-jwt skips its expiry check when
@@ -142,7 +149,7 @@ sequenceDiagram
   B->>C: read receipt: exact amount, sender, recipient
 ```
 
-x402 v2 (`@x402/*` 2.19.0), `exact` scheme, network `eip155:84532`, USDC
+x402 v2 (`@x402/*` 2.21.0), `exact` scheme, network `eip155:84532`, USDC
 `0x036CbD53842c5426634e7929541eC2318f3dCF7e`. The buyer signs a gasless
 EIP-3009 `transferWithAuthorization`; the facilitator settles on-chain and the
 response carries the transaction in `PAYMENT-RESPONSE`.
@@ -153,11 +160,19 @@ The facilitator's `PAYMENT-RESPONSE` is a claim; the source of truth for "the
 money reached the Catena deposit address" is the chain. After settlement the
 demo reads the transaction receipt over a public Base Sepolia RPC
 (`src/onchain.ts`) and checks that a USDC `Transfer` for the exact amount went
-to the seller's Catena deposit address. A reverted transaction, a transfer to
-the wrong address, or the wrong amount fails the run; an unreadable receipt
-(RPC lag) is reported but does not fail it, since the facilitator already
-settled. This uses only a public RPC, so it adds no Catena CLI or SDK
-dependency.
+from the buyer's wallet to the seller's Catena deposit address. Pinning the
+sender is what makes the check mean something: without it, a stale transaction
+from an earlier run, or anyone else paying that address, would confirm as this
+run's settlement. A reverted transaction, a transfer to the wrong address, or
+the wrong amount fails the run; an unreadable receipt (RPC lag) is reported but
+does not fail it, since the facilitator already settled. This uses only a
+public RPC, so it adds no Catena CLI or SDK dependency.
+
+`@x402/*` 2.21.0 added a server-side check that the settlement transaction
+carries a matching transfer event. That runs inside the payment library, on the
+seller's own report of what it did. The check here reads the chain from the
+buyer's side, against an address the buyer chose, so it still stands: it is a
+different trust boundary, not a duplicate.
 
 One precision: arriving at the address is not the same as being credited to the
 account. A payments platform can run a receive-policy guard (allowed
@@ -199,9 +214,9 @@ not oversights.
   default). A production deployment behind an internal network should also
   resolve the hostname first and refuse private, loopback and link-local
   ranges, pinning the connection to the resolved address so DNS cannot
-  change under it, and cap the response body size. Those need connection-
-  level control that would dominate a demo whose subject is identity before
-  payment.
+  change under it, and stream the response under a size cap (nothing bounds
+  the body today). Those need connection-level control that would dominate a
+  demo whose subject is identity before payment.
 - **No request rate limiting.** The seller does not cap request rate, so a
   caller can hammer the endpoint unbounded (each request costs a did:web
   resolution, bounded by the 5s fetch timeout, and a nonce-cache lookup,
@@ -209,6 +224,3 @@ not oversights.
   limiting. The public facilitator and RPC apply their own limits, and the
   price is required to be greater than zero so the demo never generates a
   0-value settlement.
-- **did:web response size.** Resolution fetches with a timeout and allows HTTP
-  only for local hosts (`createSellerResolver`), but does not cap the response
-  body; a production resolver would stream and bound it.
