@@ -2,32 +2,27 @@ import { createPublicClient, custom, encodeEventTopics, toHex } from "viem"
 import { baseSepolia } from "viem/chains"
 import { describe, expect, it } from "vitest"
 import { BASE_SEPOLIA_USDC } from "../src/config.js"
-import { verifySettlement } from "../src/onchain.js"
+import { TRANSFER_EVENT, verifySettlement } from "../src/onchain.js"
 
 const TX =
   "0x0000000000000000000000000000000000000000000000000000000000000abc" as const
-const BUYER = "0x1111111111111111111111111111111111111111"
-const CATENA = "0x2222222222222222222222222222222222222222"
+const BUYER = "0x1111111111111111111111111111111111111111" as const
+const CATENA = "0x2222222222222222222222222222222222222222" as const
+const STRANGER = "0x000000000000000000000000000000000000dEaD" as const
+const OTHER_TOKEN = "0x0000000000000000000000000000000000000bad" as const
 
-function transferLog(to: string, value: bigint, from?: string) {
-  const topics = encodeEventTopics({
-    abi: [
-      {
-        type: "event",
-        name: "Transfer",
-        inputs: [
-          { name: "from", type: "address", indexed: true },
-          { name: "to", type: "address", indexed: true },
-          { name: "value", type: "uint256", indexed: false },
-        ],
-      },
-    ],
-    eventName: "Transfer",
-    args: { from: (from ?? BUYER) as `0x${string}`, to: to as `0x${string}` },
-  })
+function transferLog(
+  to: `0x${string}`,
+  value: bigint,
+  from: `0x${string}` = BUYER,
+) {
   return {
     address: BASE_SEPOLIA_USDC,
-    topics,
+    topics: encodeEventTopics({
+      abi: [TRANSFER_EVENT],
+      eventName: "Transfer",
+      args: { from, to },
+    }),
     data: toHex(value, { size: 32 }),
     blockNumber: "0x2a5f2b8",
   }
@@ -96,14 +91,20 @@ describe("verifySettlement", () => {
     )
   })
 
-  it("throws when there is no transfer to the expected address", async () => {
+  // A settlement is only this run's if the token, sender and recipient all
+  // match: a stale hash from an earlier run would otherwise confirm.
+  it.each([
+    ["recipient", transferLog(STRANGER, 1000n)],
+    ["sender", transferLog(CATENA, 1000n, STRANGER)],
+    ["token", { ...transferLog(CATENA, 1000n), address: OTHER_TOKEN }],
+  ])("throws when the %s does not match", async (_field, log) => {
     const client = clientReturning({
       status: "0x1",
       blockNumber: "0x2a5f2b8",
-      logs: [transferLog("0x000000000000000000000000000000000000dEaD", 1000n)],
+      logs: [log],
     })
     await expect(verifySettlement({ ...opts, client })).rejects.toThrow(
-      /no USDC transfer/i,
+      /no USDC transfer from/i,
     )
   })
 
@@ -135,42 +136,5 @@ describe("verifySettlement", () => {
       delayMs: 1,
     })
     expect(result.status).toBe("unavailable")
-  })
-})
-
-describe("settlement attribution", () => {
-  it("rejects a receipt whose transfer came from a different sender", async () => {
-    // A facilitator returning a stale hash from an earlier run (same price,
-    // same payTo) would otherwise confirm as this run's settlement.
-    const client = clientReturning({
-      status: "0x1",
-      blockNumber: "0x2a5f2b8",
-      logs: [
-        transferLog(
-          CATENA,
-          1000n,
-          "0x000000000000000000000000000000000000dead",
-        ),
-      ],
-    })
-    await expect(verifySettlement({ ...opts, client })).rejects.toThrow(
-      /No USDC transfer from/,
-    )
-  })
-
-  it("ignores a transfer of another token to the same address", async () => {
-    const client = clientReturning({
-      status: "0x1",
-      blockNumber: "0x2a5f2b8",
-      logs: [
-        {
-          ...transferLog(CATENA, 1000n),
-          address: "0x0000000000000000000000000000000000000bad",
-        },
-      ],
-    })
-    await expect(verifySettlement({ ...opts, client })).rejects.toThrow(
-      /No USDC transfer from/,
-    )
   })
 })

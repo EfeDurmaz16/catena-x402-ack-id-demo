@@ -1,6 +1,6 @@
 import { createServer } from "node:http"
 import { createAmountCapAuthorization } from "../src/seller/authorization.js"
-import { createSeller } from "../src/seller/server.js"
+import { createSeller, paymentPayer } from "../src/seller/server.js"
 import type { Identity } from "../src/identity.js"
 import type { Authorize } from "../src/seller/authorization.js"
 import type { FacilitatorClient } from "@x402/core/server"
@@ -17,13 +17,6 @@ import type { Server } from "node:http"
 export const TEST_NETWORK: Network = "eip155:84532"
 export const TEST_PAY_TO = "0x0000000000000000000000000000000000000001"
 
-/** The payer the real facilitator would report: the signed EIP-3009 `from`. */
-function payloadPayer(payload: PaymentPayload): string | undefined {
-  const inner = (payload.payload as { authorization?: { from?: unknown } })
-    .authorization?.from
-  return typeof inner === "string" ? inner : undefined
-}
-
 /**
  * Facilitator test double: records every verify/settle invocation and
  * approves everything, so tests can assert exactly when settlement logic is
@@ -39,7 +32,7 @@ export class FakeFacilitatorClient implements FacilitatorClient {
     _requirements: PaymentRequirements,
   ): Promise<VerifyResponse> {
     this.verifyCalls.push(payload)
-    const payer = payloadPayer(payload)
+    const payer = paymentPayer(payload.payload)
     return Promise.resolve({ isValid: true, ...(payer ? { payer } : {}) })
   }
 
@@ -48,7 +41,7 @@ export class FakeFacilitatorClient implements FacilitatorClient {
     _requirements: PaymentRequirements,
   ): Promise<SettleResponse> {
     this.settleCalls.push(payload)
-    const payer = payloadPayer(payload)
+    const payer = paymentPayer(payload.payload)
     return Promise.resolve({
       success: true,
       transaction: "0xtest-settlement-transaction",

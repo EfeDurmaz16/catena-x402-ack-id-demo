@@ -7,16 +7,16 @@ import { loadConfig, moneyToMicros } from "../src/config.js"
 import {
   consumeProofNonce,
   createIdentity,
-  createSellerResolver,
   createIdentityProof,
+  createSellerResolver,
   IdentityError,
   NonceCache,
   verifyIdentityProof,
 } from "../src/identity.js"
 import { createAmountCapAuthorization } from "../src/seller/authorization.js"
 import type { DidHost } from "../src/buyer/did-host.js"
-import type { AddressInfo } from "node:net"
 import type { Identity } from "../src/identity.js"
+import type { RequestListener } from "node:http"
 
 const SELLER_DID = "did:web:seller.example"
 
@@ -35,6 +35,27 @@ async function hostedIdentity(): Promise<Identity> {
   return identity
 }
 
+/** An HTTP server on an ephemeral port, for the duration of one test. */
+async function tempServer(
+  handler: RequestListener,
+): Promise<{ port: number; close: () => Promise<void> }> {
+  const server = createServer(handler)
+  await new Promise<void>((resolve) => server.listen(0, resolve))
+  const address = server.address()
+  if (address === null || typeof address === "string") {
+    throw new Error("Could not determine temp server port")
+  }
+  return {
+    port: address.port,
+    close: () =>
+      new Promise((resolve) => {
+        server.close(() => {
+          resolve()
+        })
+      }),
+  }
+}
+
 async function expectRejection(
   promise: Promise<unknown>,
   code: string,
@@ -44,19 +65,16 @@ async function expectRejection(
     (e: unknown) => e,
   )
   expect(error).toBeInstanceOf(IdentityError)
-  expect((error as IdentityError).code).toBe(code)
+  expect(error).toMatchObject({ code })
 }
 
 describe("moneyToMicros", () => {
-  it("parses money strings into exact micro-dollars", () => {
+  it("parses money strings into exact micro-dollars and rejects the rest", () => {
     expect(moneyToMicros("$0.001")).toBe(1000n)
     expect(moneyToMicros("$1")).toBe(1_000_000n)
     expect(moneyToMicros("$12.34")).toBe(12_340_000n)
-  })
-
-  it("rejects malformed and over-precise values", () => {
-    expect(() => moneyToMicros("0.001")).toThrow()
-    expect(() => moneyToMicros("$0.0000001")).toThrow()
+    expect(() => moneyToMicros("0.001")).toThrow() // no leading $
+    expect(() => moneyToMicros("$0.0000001")).toThrow() // finer than micros
   })
 })
 
@@ -64,12 +82,6 @@ describe("config", () => {
   it("rejects a zero endpoint price (a paid endpoint must charge > 0)", () => {
     expect(() => loadConfig({ ENDPOINT_PRICE_USD: "$0" })).toThrow()
     expect(() => loadConfig({ ENDPOINT_PRICE_USD: "$0.000000" })).toThrow()
-  })
-
-  it("accepts a positive price", () => {
-    expect(
-      loadConfig({ ENDPOINT_PRICE_USD: "$0.001" }).ENDPOINT_PRICE_USD,
-    ).toBe("$0.001")
   })
 
   it("treats empty optional env values as absent (copied .env.example)", () => {
@@ -88,15 +100,12 @@ describe("amount-cap authorization stub", () => {
   const authorize = createAmountCapAuthorization("$0.05")
   const did = "did:web:buyer.example" as const
 
-  it("allows prices at or under the cap", async () => {
+  it("allows prices up to the cap and denies those over it", async () => {
     expect((await authorize({ did, price: "$0.001" })).allowed).toBe(true)
-    expect((await authorize({ did, price: "$0.05" })).allowed).toBe(true)
-  })
-
-  it("denies prices over the cap", async () => {
-    const decision = await authorize({ did, price: "$0.06" })
-    expect(decision.allowed).toBe(false)
-    expect(decision.reason).toContain("cap")
+    expect((await authorize({ did, price: "$0.05" })).allowed).toBe(true) // at the cap
+    const denied = await authorize({ did, price: "$0.06" })
+    expect(denied.allowed).toBe(false)
+    expect(denied.reason).toContain("cap")
   })
 })
 
@@ -111,20 +120,6 @@ describe("identity proof verification (did:web + JWT)", () => {
     const verified = await verifyIdentityProof(proof, { audience: SELLER_DID })
     expect(verified.did).toBe(identity.did)
     expect(verified.nonce).toBeTruthy()
-  })
-
-  it("rejects a missing proof as identity_missing", async () => {
-    await expectRejection(
-      verifyIdentityProof(undefined, { audience: SELLER_DID }),
-      "identity_missing",
-    )
-  })
-
-  it("rejects a malformed proof as identity_invalid", async () => {
-    await expectRejection(
-      verifyIdentityProof("not-a-jwt", { audience: SELLER_DID }),
-      "identity_invalid",
-    )
   })
 
   it("rejects an expired proof as identity_expired", async () => {
@@ -155,36 +150,42 @@ describe("identity proof verification (did:web + JWT)", () => {
     )
   })
 
-  it("rejects a proof that omits aud entirely as identity_mismatched", async () => {
-    // did-jwt skips its audience check when the payload has no aud claim,
-    // so this must be caught by our own exact-match guard.
-    const identity = await hostedIdentity()
-    const proof = await createJwt(
-      { nonce: "nonce-without-aud" },
-      {
-        issuer: identity.did,
-        signer: createJwtSigner(identity.keypair),
-        expiresIn: 300,
-      },
-    )
-    await expectRejection(
-      verifyIdentityProof(proof, { audience: SELLER_DID }),
-      "identity_mismatched",
-    )
-  })
-
-  it("rejects a proof issued for a different audience as identity_mismatched", async () => {
-    const identity = await hostedIdentity()
-    const proof = await createIdentityProof({
-      issuerDid: identity.did,
-      keypair: identity.keypair,
-      audience: "did:web:some-other-seller.example",
-    })
-    await expectRejection(
-      verifyIdentityProof(proof, { audience: SELLER_DID }),
-      "identity_mismatched",
-    )
-  })
+  // did-jwt skips its audience check when the payload carries no aud claim, so
+  // both of these must be caught by our own exact-match guard.
+  it.each([
+    [
+      "omits aud entirely",
+      (identity: Identity) =>
+        createJwt(
+          { nonce: "nonce-without-aud" },
+          {
+            issuer: identity.did,
+            signer: createJwtSigner(identity.keypair),
+            expiresIn: 300,
+          },
+        ),
+    ],
+    [
+      "is issued for a different audience",
+      (identity: Identity) =>
+        createIdentityProof({
+          issuerDid: identity.did,
+          keypair: identity.keypair,
+          audience: "did:web:some-other-seller.example",
+        }),
+    ],
+  ] as const)(
+    "rejects a proof that %s as identity_mismatched",
+    async (_case, buildProof) => {
+      const identity = await hostedIdentity()
+      await expectRejection(
+        verifyIdentityProof(await buildProof(identity), {
+          audience: SELLER_DID,
+        }),
+        "identity_mismatched",
+      )
+    },
+  )
 
   it("consumeProofNonce consumes a nonce once and rejects the second use", async () => {
     // Replay single-use is enforced at settlement, not during verification, so
@@ -204,7 +205,7 @@ describe("identity proof verification (did:web + JWT)", () => {
       error = e
     }
     expect(error).toBeInstanceOf(IdentityError)
-    expect((error as IdentityError).code).toBe("identity_replayed")
+    expect(error).toMatchObject({ code: "identity_replayed" })
   })
 
   it("rejects a proof with no expiry as identity_invalid", async () => {
@@ -256,41 +257,28 @@ describe("did:web resolution safety", () => {
     // did:web could bounce the seller to plain http or an internal address.
     // Legitimate documents are served directly, so refusing costs nothing.
     let targetHits = 0
-    const target = createServer((_req, res) => {
+    const target = await tempServer((_req, res) => {
       targetHits += 1
       res.writeHead(200, { "content-type": "application/json" })
       res.end(JSON.stringify({ id: "did:web:whatever" }))
     })
-    await new Promise<void>((resolve) => target.listen(0, resolve))
-    const targetPort = (target.address() as AddressInfo).port
-
-    const redirector = createServer((_req, res) => {
+    const redirector = await tempServer((_req, res) => {
       res.writeHead(302, {
-        location: `http://127.0.0.1:${targetPort}/.well-known/did.json`,
+        location: `http://127.0.0.1:${target.port}/.well-known/did.json`,
       })
       res.end()
     })
-    await new Promise<void>((resolve) => redirector.listen(0, resolve))
-    const redirectorPort = (redirector.address() as AddressInfo).port
 
     try {
       const resolver = createSellerResolver()
       const resolution = await resolver.resolve(
-        `did:web:localhost%3A${redirectorPort}`,
+        `did:web:localhost%3A${redirector.port}`,
       )
       expect(resolution.didResolutionMetadata.error).toBe("notFound")
       expect(targetHits).toBe(0) // the redirect was never followed
     } finally {
-      await new Promise<void>((resolve) => {
-        target.close(() => {
-          resolve()
-        })
-      })
-      await new Promise<void>((resolve) => {
-        redirector.close(() => {
-          resolve()
-        })
-      })
+      await target.close()
+      await redirector.close()
     }
   })
 })

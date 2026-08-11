@@ -9,8 +9,8 @@ import { generateKeypair } from "@agentcommercekit/keys"
 import { ExactEvmScheme } from "@x402/evm/exact/client"
 import { wrapFetchWithPayment, x402Client } from "@x402/fetch"
 import { privateKeyToAccount } from "viem/accounts"
-import { afterEach, describe, expect, it } from "vitest"
-import { runBuyer } from "../src/buyer/buyer.js"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { runBuyer, signScenarioProof } from "../src/buyer/buyer.js"
 import { startDidHost } from "../src/buyer/did-host.js"
 import { createIdentity, createIdentityProof } from "../src/identity.js"
 import { PROTECTED_PATH } from "../src/seller/server.js"
@@ -48,16 +48,7 @@ async function buildProof(
   hosts.push(host)
   const identity = await createIdentity(host.baseUrl)
   host.setDocument(identity.didDocument)
-  const keypair =
-    scenario === "mismatched-identity"
-      ? await generateKeypair("secp256k1") // key the DID does not publish
-      : identity.keypair
-  return createIdentityProof({
-    issuerDid: identity.did,
-    keypair,
-    audience: sellerDid,
-    ...(scenario === "expired-identity" ? { expiresInSeconds: -600 } : {}),
-  })
+  return signScenarioProof(scenario, identity, sellerDid)
 }
 
 async function runScenario(scenario: Scenario) {
@@ -125,36 +116,41 @@ describe("identity-before-payment ordering", () => {
     },
   )
 
-  it("did:key identity: rejected as identity_invalid before settlement", async () => {
-    // The default resolver handles did:key too, but a self-issued did:key
-    // proves no domain control. The gate must require did:web.
-    seller = await startTestSeller()
-    const keypair = await generateKeypair("secp256k1")
-    const did = createDidKeyUri(keypair)
-    const proof = await createJwt(
-      { aud: seller.identity.did, nonce: "did-key-nonce" },
-      { issuer: did, signer: createJwtSigner(keypair), expiresIn: 300 },
-    )
-    const response = await fetch(`${seller.url}${PROTECTED_PATH}`, {
-      headers: { authorization: `Bearer ${proof}` },
-    })
-    expect(response.status).toBe(401)
-    expect(await response.json()).toMatchObject({ error: "identity_invalid" })
-    expect(seller.facilitator.verifyCalls).toHaveLength(0)
-    expect(seller.facilitator.settleCalls).toHaveLength(0)
-  })
-
-  it("garbage identity proof: rejected without reaching the settlement adapter", async () => {
-    seller = await startTestSeller()
-    const response = await fetch(`${seller.url}${PROTECTED_PATH}`, {
-      headers: { authorization: "Bearer not.a.jwt" },
-    })
-    expect(response.status).toBe(401)
-    const body: unknown = await response.json()
-    expect(body).toMatchObject({ error: "identity_invalid" })
-    expect(seller.facilitator.verifyCalls).toHaveLength(0)
-    expect(seller.facilitator.settleCalls).toHaveLength(0)
-  })
+  // A did:key proof verifies against its own embedded key and proves no domain
+  // control, so the gate must require did:web; "not.a.jwt" is not a proof at
+  // all. Both are identity_invalid, and neither reaches the payment layer.
+  it.each([
+    [
+      "did:key",
+      async (sellerDid: string) => {
+        const keypair = await generateKeypair("secp256k1")
+        return createJwt(
+          { aud: sellerDid, nonce: "did-key-nonce" },
+          {
+            issuer: createDidKeyUri(keypair),
+            signer: createJwtSigner(keypair),
+            expiresIn: 300,
+          },
+        )
+      },
+    ],
+    ["garbage", () => Promise.resolve("not.a.jwt")],
+  ] as const)(
+    "%s identity proof: rejected as identity_invalid before settlement",
+    async (_name, buildToken) => {
+      seller = await startTestSeller()
+      const response = await fetch(`${seller.url}${PROTECTED_PATH}`, {
+        headers: {
+          authorization: `Bearer ${await buildToken(seller.identity.did)}`,
+        },
+      })
+      expect(response.status).toBe(401)
+      const body: unknown = await response.json()
+      expect(body).toMatchObject({ error: "identity_invalid" })
+      expect(seller.facilitator.verifyCalls).toHaveLength(0)
+      expect(seller.facilitator.settleCalls).toHaveLength(0)
+    },
+  )
 
   it("identity-payer binding: proof bound to another wallet is rejected after verify, before settle", async () => {
     // Models the attack: a valid identity proof paired with a payment from a
@@ -249,12 +245,17 @@ describe("identity-before-payment ordering", () => {
     })
     const url = `${seller.url}${PROTECTED_PATH}`
 
-    // Undecodable payment: the payment layer never verifies or settles it.
+    // Undecodable payment: the payment layer never verifies or settles it. It
+    // logs the decode failure, which is the expected outcome here, not noise
+    // worth printing on every run.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined)
     const garbage = await fetch(url, {
       headers: {
         authorization: `Bearer ${proof}`,
         "payment-signature": "bm90LWEtcmVhbC1wYXltZW50",
       },
+    }).finally(() => {
+      warn.mockRestore()
     })
     expect(garbage.status).not.toBe(200)
     expect(seller.facilitator.settleCalls).toHaveLength(0)
