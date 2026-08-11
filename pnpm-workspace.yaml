@@ -1,0 +1,5 @@
+# pnpm 11 blocks dependency build scripts unless they are listed here. esbuild
+# (via tsx) needs its postinstall to fetch a platform binary, so `pnpm install`
+# leaves tsx unusable without this file.
+allowBuilds:
+  esbuild: true
