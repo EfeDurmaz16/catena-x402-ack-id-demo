@@ -232,10 +232,10 @@ describe("identity-before-payment ordering", () => {
   })
 
   it("a garbage payment does not burn the proof's nonce", async () => {
-    // Regression guard for the fix: the nonce is consumed only at settlement,
-    // so a payment that never settles (here, an undecodable one) leaves the
-    // proof usable. Under the old header-presence consumption this failed: the
-    // junk payment burned the nonce and the real payment was rejected as replay.
+    // The nonce is consumed only at settlement, so a payment that never
+    // settles (here, an undecodable one) leaves the proof usable. Consuming
+    // on header presence instead would let the junk payment burn the nonce
+    // and reject the real payment as a replay.
     seller = await startTestSeller()
     const host = await startDidHost()
     hosts.push(host)
