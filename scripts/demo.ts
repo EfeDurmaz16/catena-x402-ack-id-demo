@@ -7,11 +7,15 @@
  * the scenario did not behave as required.
  */
 import { HTTPFacilitatorClient } from "@x402/core/server"
+import { privateKeyToAccount } from "viem/accounts"
 import { isScenario, runBuyer, SCENARIOS } from "../src/buyer/buyer.js"
-import { BASE_SEPOLIA_USDC, loadConfig, moneyToMicros } from "../src/config.js"
+import {
+  BASE_SEPOLIA_USDC,
+  loadConfigOrExit,
+  moneyToMicros,
+} from "../src/config.js"
 import { CountingFacilitatorClient } from "../src/counting-facilitator.js"
 import { verifySettlement } from "../src/onchain.js"
-import { privateKeyToAccount } from "viem/accounts"
 import { createAmountCapAuthorization } from "../src/seller/authorization.js"
 import { createSeller } from "../src/seller/server.js"
 import type { Server } from "node:http"
@@ -22,6 +26,11 @@ try {
   // no .env file; environment variables may be set directly
 }
 
+/** A 32-byte transaction hash. The facilitator's value is checked, not trusted. */
+function isTxHash(value: string): value is `0x${string}` {
+  return /^0x[0-9a-fA-F]{64}$/.test(value)
+}
+
 const scenarioArg = process.argv[2] ?? ""
 if (!isScenario(scenarioArg)) {
   console.error(`Usage: demo.ts <${SCENARIOS.join(" | ")}>`)
@@ -29,7 +38,7 @@ if (!isScenario(scenarioArg)) {
 }
 const scenario = scenarioArg
 
-const config = loadConfig()
+const config = loadConfigOrExit()
 // The valid scenario settles real testnet USDC; refuse to burn it to a
 // placeholder address. Rejected-identity scenarios never reach payment, so
 // they run without a funded wallet or a real pay-to address.
@@ -44,6 +53,12 @@ const facilitator = new CountingFacilitatorClient(
   new HTTPFacilitatorClient({ url: config.X402_FACILITATOR_URL }),
 )
 
+// Derived from our own key, never from the facilitator's reported payer: a
+// facilitator-supplied sender would make the on-chain check circular.
+const buyerAddress = config.BUYER_EVM_PRIVATE_KEY
+  ? privateKeyToAccount(config.BUYER_EVM_PRIVATE_KEY).address
+  : undefined
+
 const { app, identity } = await createSeller({
   baseUrl: config.sellerBaseUrl,
   network: config.X402_NETWORK,
@@ -53,13 +68,22 @@ const { app, identity } = await createSeller({
   authorize: createAmountCapAuthorization(config.AUTHORIZATION_MAX_USD),
 })
 
-const server: Server = await new Promise((resolve, reject) => {
+// Fail loudly if the port is taken: a stale seller with old config would
+// otherwise serve the demo silently.
+const server: Server = await new Promise<Server>((resolve, reject) => {
   const s = app.listen(config.SELLER_PORT, () => {
     resolve(s)
   })
-  // Fail loudly if the port is taken: a stale seller with old config would
-  // otherwise serve the demo silently.
   s.once("error", reject)
+}).catch((error: unknown) => {
+  const inUse =
+    error instanceof Error && "code" in error && error.code === "EADDRINUSE"
+  console.error(
+    inUse
+      ? `Port ${config.SELLER_PORT} is already in use. Stop the other seller (pnpm seller), or set SELLER_PORT in .env, then rerun.`
+      : `Could not start the seller: ${error instanceof Error ? error.message : String(error)}`,
+  )
+  process.exit(2)
 })
 
 console.log(`Seller:   ${config.sellerBaseUrl} (${identity.did})`)
@@ -96,43 +120,45 @@ try {
   // on-chain, rather than trusting the facilitator's response. Only the valid
   // scenario settles, and only when the seller pays a real address.
   let onChainConfirmed = false
-  if (
-    result.settlement?.transaction &&
-    config.SELLER_PAY_TO_ADDRESS &&
-    config.BUYER_EVM_PRIVATE_KEY
-  ) {
-    const onchain = await verifySettlement({
-      txHash: result.settlement.transaction as `0x${string}`,
-      rpcUrl: config.BASE_SEPOLIA_RPC_URL,
-      token: BASE_SEPOLIA_USDC,
-      expectedTo: config.SELLER_PAY_TO_ADDRESS,
-      // Derived from our own key, never from the facilitator's reported
-      // payer: a facilitator-supplied sender would make the check circular.
-      expectedFrom: privateKeyToAccount(config.BUYER_EVM_PRIVATE_KEY).address,
-      expectedAmount: moneyToMicros(config.ENDPOINT_PRICE_USD),
-      // Public RPCs lag behind the facilitator's settlement by seconds; poll
-      // for ~30s so a genuinely settled payment is not reported as a failure
-      // (rerunning would spend real USDC again).
-      attempts: 20,
-    }).catch((error: unknown) => {
-      // A thrown error means the chain contradicts the claimed settlement.
+  const txHash = result.settlement?.transaction
+  if (txHash !== undefined && config.SELLER_PAY_TO_ADDRESS && buyerAddress) {
+    if (!isTxHash(txHash)) {
       console.error(
-        `\nON-CHAIN MISMATCH: ${error instanceof Error ? error.message : String(error)}`,
+        `Facilitator returned a malformed transaction hash: ${txHash}`,
       )
-      return null
-    })
-    if (onchain?.status === "confirmed") {
-      console.log(
-        `On-chain:     ${onchain.settlement.amount} atomic USDC confirmed to ${onchain.settlement.to} (block ${onchain.settlement.block})`,
-      )
-      console.log(
-        `Loop closed:  confirmed on-chain to your Catena deposit address; the Catena console shows whether it credited as an incoming deposit.`,
-      )
-      onChainConfirmed = true
-    } else if (onchain?.status === "unavailable") {
-      console.log(
-        `On-chain:     not confirmed (${onchain.reason}); rerun to confirm`,
-      )
+    } else {
+      console.log("On-chain:     confirming (public RPC, up to ~30s)...")
+      const onchain = await verifySettlement({
+        txHash,
+        rpcUrl: config.BASE_SEPOLIA_RPC_URL,
+        token: BASE_SEPOLIA_USDC,
+        expectedTo: config.SELLER_PAY_TO_ADDRESS,
+        expectedFrom: buyerAddress,
+        expectedAmount: moneyToMicros(config.ENDPOINT_PRICE_USD),
+        // Public RPCs lag behind the facilitator's settlement by seconds; poll
+        // for ~30s so a genuinely settled payment is not reported as a failure
+        // (rerunning would spend real USDC again).
+        attempts: 20,
+      }).catch((error: unknown) => {
+        // A thrown error means the chain contradicts the claimed settlement.
+        console.error(
+          `\nON-CHAIN MISMATCH: ${error instanceof Error ? error.message : String(error)}`,
+        )
+        return null
+      })
+      if (onchain?.status === "confirmed") {
+        console.log(
+          `On-chain:     ${onchain.settlement.amount} atomic USDC confirmed to ${onchain.settlement.to} (block ${onchain.settlement.block})`,
+        )
+        console.log(
+          `Loop closed:  confirmed on-chain to your Catena deposit address; the Catena console shows whether it credited as an incoming deposit.`,
+        )
+        onChainConfirmed = true
+      } else if (onchain?.status === "unavailable") {
+        console.log(
+          `On-chain:     not confirmed (${onchain.reason}); rerun to confirm`,
+        )
+      }
     }
   }
 
@@ -152,6 +178,13 @@ try {
         : "\nPASS: identity rejected before any payment; settlement adapter never invoked.",
     )
   } else {
+    if (scenario === "valid" && result.status === 402 && buyerAddress) {
+      // A 402 that never became a 200 usually means the wallet holds no USDC:
+      // the payment is signed but the facilitator cannot settle it.
+      console.error(
+        `\nThe payment was not accepted. If this wallet is unfunded, send it Base Sepolia USDC and rerun:\n  address: ${buyerAddress}\n  faucet:  https://faucet.circle.com (select Base Sepolia)`,
+      )
+    }
     console.error("\nFAIL: scenario did not behave as required.")
     process.exitCode = 1
   }

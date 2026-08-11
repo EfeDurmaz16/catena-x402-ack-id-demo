@@ -1,5 +1,5 @@
 import { HTTPFacilitatorClient } from "@x402/core/server"
-import { loadConfig } from "../config.js"
+import { loadConfigOrExit } from "../config.js"
 import { createAmountCapAuthorization } from "./authorization.js"
 import { createSeller, PROTECTED_PATH } from "./server.js"
 
@@ -9,7 +9,7 @@ try {
   // no .env file; environment variables may be set directly
 }
 
-const config = loadConfig()
+const config = loadConfigOrExit()
 
 if (!config.SELLER_PAY_TO_ADDRESS) {
   console.error("SELLER_PAY_TO_ADDRESS is required (see .env.example)")

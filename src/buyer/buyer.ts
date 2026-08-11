@@ -9,6 +9,7 @@ import { privateKeyToAccount } from "viem/accounts"
 import { createIdentity, createIdentityProof } from "../identity.js"
 import { PROTECTED_PATH } from "../seller/server.js"
 import { startDidHost } from "./did-host.js"
+import type { Identity } from "../identity.js"
 import type { SettleResponse } from "@x402/core/types"
 
 export const SCENARIOS = [
@@ -28,6 +29,32 @@ export function isScenario(value: string): value is Scenario {
  * any 402 challenge, so this key never signs a payment. */
 const UNUSED_PRIVATE_KEY =
   "0x0000000000000000000000000000000000000000000000000000000000000001"
+
+/**
+ * Sign the identity proof a scenario calls for, or undefined for
+ * missing-identity. Exported so tests drive the exact proofs the buyer sends.
+ */
+export async function signScenarioProof(
+  scenario: Scenario,
+  identity: Identity,
+  sellerDid: string,
+  paymentAddress?: string,
+): Promise<string | undefined> {
+  if (scenario === "missing-identity") return undefined
+  // mismatched-identity signs with a key the claimed DID does not publish: an
+  // attacker asserting an identity they do not control.
+  const keypair =
+    scenario === "mismatched-identity"
+      ? await generateKeypair("secp256k1")
+      : identity.keypair
+  return createIdentityProof({
+    issuerDid: identity.did,
+    keypair,
+    audience: sellerDid,
+    ...(paymentAddress ? { paymentAddress } : {}),
+    ...(scenario === "expired-identity" ? { expiresInSeconds: -600 } : {}),
+  })
+}
 
 export interface BuyerOptions {
   sellerUrl: string
@@ -83,41 +110,12 @@ export async function runBuyer(
     const signer = privateKeyToAccount(evmPrivateKey ?? UNUSED_PRIVATE_KEY)
     const paymentAddress = bindPaymentAddress ?? signer.address
 
-    let proof: string | undefined
-    switch (scenario) {
-      case "valid":
-        proof = await createIdentityProof({
-          issuerDid: identity.did,
-          keypair: identity.keypair,
-          audience: sellerDid,
-          paymentAddress,
-        })
-        break
-      case "missing-identity":
-        proof = undefined
-        break
-      case "mismatched-identity": {
-        // Signed with a key the claimed DID does not publish: an attacker
-        // asserting an identity they do not control.
-        const rogueKeypair = await generateKeypair("secp256k1")
-        proof = await createIdentityProof({
-          issuerDid: identity.did,
-          keypair: rogueKeypair,
-          audience: sellerDid,
-          paymentAddress,
-        })
-        break
-      }
-      case "expired-identity":
-        proof = await createIdentityProof({
-          issuerDid: identity.did,
-          keypair: identity.keypair,
-          audience: sellerDid,
-          paymentAddress,
-          expiresInSeconds: -600,
-        })
-        break
-    }
+    const proof = await signScenarioProof(
+      scenario,
+      identity,
+      sellerDid,
+      paymentAddress,
+    )
 
     const client = new x402Client().register(
       "eip155:*",

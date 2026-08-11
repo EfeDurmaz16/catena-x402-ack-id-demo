@@ -8,13 +8,14 @@ import {
 import { baseSepolia } from "viem/chains"
 import type { PublicClient } from "viem"
 
-const TRANSFER_EVENT = parseAbiItem(
+/** ERC-20 Transfer, the only event this module reads. Shared with the tests. */
+export const TRANSFER_EVENT = parseAbiItem(
   "event Transfer(address indexed from, address indexed to, uint256 value)",
 )
 
 export interface ConfirmedSettlement {
-  from: string
-  to: string
+  from: `0x${string}`
+  to: `0x${string}`
   amount: bigint
   block: bigint
 }
@@ -27,13 +28,13 @@ export interface VerifySettlementOptions {
   txHash: `0x${string}`
   rpcUrl: string
   /** The USDC token contract to look for the Transfer on. */
-  token: string
+  token: `0x${string}`
   /** The address that must have received the USDC (the Catena account). */
-  expectedTo: string
+  expectedTo: `0x${string}`
   /** The wallet that must have sent it (the buyer). Without this, a stale
    * transaction from an earlier run (same price, same payTo) or any other
    * buyer paying that address would confirm as this run's settlement. */
-  expectedFrom: string
+  expectedFrom: `0x${string}`
   /** The exact amount that must have been transferred (atomic USDC units). */
   expectedAmount: bigint
   /** Injected for tests; defaults to an RPC client for `rpcUrl`. */

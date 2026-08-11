@@ -6,6 +6,7 @@ import {
 } from "@agentcommercekit/did"
 import { createJwt, createJwtSigner, verifyJwt } from "@agentcommercekit/jwt"
 import { generateKeypair } from "@agentcommercekit/keys"
+import { z } from "zod"
 import type { DidDocument, DidResolver, DidUri } from "@agentcommercekit/did"
 import type { Keypair } from "@agentcommercekit/keys"
 
@@ -96,14 +97,19 @@ export async function createIdentityProof(
   )
 }
 
+const claimsSchema = z.record(z.string(), z.unknown())
+
 /** Decode a JWT's payload claims WITHOUT verifying its signature. */
 function decodeProofPayload(jwt: string): Record<string, unknown> | undefined {
   try {
     const segment = jwt.split(".")[1]
     if (!segment) return undefined
-    return JSON.parse(
+    const json: unknown = JSON.parse(
       Buffer.from(segment, "base64url").toString("utf8"),
-    ) as Record<string, unknown>
+    )
+    // Parsed, not asserted: a JWT body can decode to an array or a string,
+    // and those carry no claims.
+    return claimsSchema.safeParse(json).data
   } catch {
     return undefined
   }
@@ -136,9 +142,11 @@ export class IdentityError extends Error {
     this.name = "IdentityError"
     this.code = code
     // 401: authentication failed (absent, malformed, expired credentials).
-    // 403: proof is well-formed but must not be accepted (wrong key, replay).
-    this.status =
-      code === "identity_mismatched" || code === "identity_replayed" ? 403 : 401
+    // 403: proof is well-formed but must not be accepted (wrong key).
+    // identity_replayed is absent on purpose: it is raised only at settlement,
+    // inside the payment hook, where it aborts and the client sees a 402. It
+    // never becomes an HTTP status here.
+    this.status = code === "identity_mismatched" ? 403 : 401
   }
 }
 
@@ -166,11 +174,18 @@ const MAX_PROOF_LIFETIME_SECONDS = 900
 export class NonceCache {
   private readonly seen = new Map<string, number>()
 
-  /**
-   * Hard bound on entries. Pruning is amortized (only at this ceiling), so a
-   * flood of payment-bearing requests cannot force an O(n) scan per request.
-   */
+  /** Hard bound on entries, so a flood of proofs cannot grow this map forever. */
   private static readonly MAX_ENTRIES = 100_000
+
+  /**
+   * Entries left after a prune. The 10% headroom is what makes pruning
+   * amortized: pruning back to the cap itself would leave the map full, and
+   * the next insert would scan it again, turning every request into an O(n)
+   * scan exactly when the seller is under load.
+   */
+  private static readonly PRUNE_TARGET = Math.floor(
+    NonceCache.MAX_ENTRIES * 0.9,
+  )
 
   /** Returns false if the nonce was already used and has not expired. */
   markUsed(nonce: string, expiresAtMs: number): boolean {
@@ -184,18 +199,18 @@ export class NonceCache {
     return true
   }
 
-  /** Drop expired entries; if still at the cap, evict oldest (insertion order). */
+  /** Drop expired entries, then evict oldest-first down to PRUNE_TARGET. */
   private prune(): void {
     const now = Date.now()
     for (const [key, expiry] of this.seen) {
       if (expiry <= now) this.seen.delete(key)
     }
-    // Under a sustained flood of unexpired nonces this evicts the oldest still
-    // -valid entry, so it could be replayed: acceptable degradation vs OOM.
-    while (this.seen.size >= NonceCache.MAX_ENTRIES) {
-      const oldest = this.seen.keys().next().value
-      if (oldest === undefined) break
-      this.seen.delete(oldest)
+    // Under a sustained flood of unexpired nonces this evicts the oldest
+    // still-valid entries, which could then be replayed: accepted, because the
+    // alternative is unbounded memory.
+    for (const key of this.seen.keys()) {
+      if (this.seen.size <= NonceCache.PRUNE_TARGET) break
+      this.seen.delete(key)
     }
   }
 }

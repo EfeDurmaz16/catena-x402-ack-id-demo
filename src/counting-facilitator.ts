@@ -1,5 +1,11 @@
 import type { FacilitatorClient } from "@x402/core/server"
-import type { PaymentPayload, PaymentRequirements } from "@x402/core/types"
+import type {
+  PaymentPayload,
+  PaymentRequirements,
+  SettleResponse,
+  SupportedResponse,
+  VerifyResponse,
+} from "@x402/core/types"
 
 /**
  * Decorator around any FacilitatorClient that counts verify/settle calls.
@@ -13,17 +19,23 @@ export class CountingFacilitatorClient implements FacilitatorClient {
 
   constructor(private readonly inner: FacilitatorClient) {}
 
-  async verify(payload: PaymentPayload, requirements: PaymentRequirements) {
+  verify(
+    payload: PaymentPayload,
+    requirements: PaymentRequirements,
+  ): Promise<VerifyResponse> {
     this.verifyCalls += 1
     return this.inner.verify(payload, requirements)
   }
 
-  async settle(payload: PaymentPayload, requirements: PaymentRequirements) {
+  settle(
+    payload: PaymentPayload,
+    requirements: PaymentRequirements,
+  ): Promise<SettleResponse> {
     this.settleCalls += 1
     return this.inner.settle(payload, requirements)
   }
 
-  async getSupported() {
+  getSupported(): Promise<SupportedResponse> {
     return this.inner.getSupported()
   }
 }

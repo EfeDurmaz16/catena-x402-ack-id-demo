@@ -14,18 +14,20 @@ const envSchema = z.object({
   SELLER_PAY_TO_ADDRESS: z.preprocess(
     emptyToUndefined,
     z
-      .string()
-      .regex(/^0x[0-9a-fA-F]{40}$/)
+      .custom<`0x${string}`>(
+        (v) => typeof v === "string" && /^0x[0-9a-fA-F]{40}$/.test(v),
+        "must be a 0x-prefixed 20-byte EVM address",
+      )
       .optional(),
   ),
   /** Buyer's EVM private key. Only needed for the real-payment path. */
   BUYER_EVM_PRIVATE_KEY: z.preprocess(
     emptyToUndefined,
     z
-      .string()
-      .regex(/^0x[0-9a-fA-F]{64}$/)
-      // Safe: the regex above guarantees the 0x-prefixed shape.
-      .transform((v) => v as `0x${string}`)
+      .custom<`0x${string}`>(
+        (v) => typeof v === "string" && /^0x[0-9a-fA-F]{64}$/.test(v),
+        "must be a 0x-prefixed 32-byte hex private key",
+      )
       .optional(),
   ),
   /**
@@ -66,12 +68,31 @@ const envSchema = z.object({
 export const BASE_SEPOLIA_USDC =
   "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as const
 
+export type Config = z.infer<typeof envSchema> & { sellerBaseUrl: string }
+
 /** Parse and validate env config; derives the local seller and buyer URLs. */
-export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const parsed = envSchema.parse(env)
   return {
     ...parsed,
     sellerBaseUrl: `http://localhost:${parsed.SELLER_PORT}`,
+  }
+}
+
+/**
+ * loadConfig for the entry points: a bad `.env` prints which variable is wrong
+ * and exits, instead of dumping a zod stack trace at a first-time runner.
+ */
+export function loadConfigOrExit(env: NodeJS.ProcessEnv = process.env): Config {
+  try {
+    return loadConfig(env)
+  } catch (error) {
+    console.error(
+      error instanceof z.ZodError
+        ? `Invalid environment (see .env.example):\n${z.prettifyError(error)}`
+        : String(error),
+    )
+    process.exit(2)
   }
 }
 

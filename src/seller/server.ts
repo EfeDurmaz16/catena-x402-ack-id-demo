@@ -1,3 +1,4 @@
+import { isEIP3009Payload } from "@x402/evm"
 import { ExactEvmScheme } from "@x402/evm/exact/server"
 import { paymentMiddleware, x402ResourceServer } from "@x402/express"
 import express from "express"
@@ -13,9 +14,16 @@ import {
 import type { Identity } from "../identity.js"
 import type { Authorize } from "./authorization.js"
 import type { DidUri } from "@agentcommercekit/did"
-import type { FacilitatorClient } from "@x402/core/server"
+import type { FacilitatorClient, HTTPTransportContext } from "@x402/core/server"
 import type { Network } from "@x402/core/types"
-import type { Express, Request, RequestHandler } from "express"
+import type { ExactEvmPayloadV2 } from "@x402/evm"
+import type {
+  Express,
+  NextFunction,
+  Request,
+  RequestHandler,
+  Response,
+} from "express"
 
 declare global {
   // Types the cross-middleware contract: identityGate writes buyerDid, the
@@ -54,39 +62,46 @@ export interface Seller {
   identity: Identity
 }
 
-function extractBearerToken(req: Request): string | undefined {
-  const header = req.headers.authorization
+/** The token of an `Authorization: Bearer <token>` header, if it is one. */
+function stripBearer(header: string | undefined): string | undefined {
   if (!header?.startsWith("Bearer ")) return undefined
   return header.slice("Bearer ".length)
-}
-
-/** Minimal read-only view of the x402 hook's transport context. */
-interface X402Transport {
-  request?: { adapter?: { getHeader(name: string): string | undefined } }
 }
 
 /** The identity proof (bearer token) on the request that reached the payment layer. */
 function bearerFromTransport(transportContext: unknown): string | undefined {
-  const header = (
-    transportContext as X402Transport | undefined
-  )?.request?.adapter?.getHeader("authorization")
-  if (!header?.startsWith("Bearer ")) return undefined
-  return header.slice("Bearer ".length)
+  // x402 types the hook's transportContext as unknown; the express adapter
+  // always passes its own HTTPTransportContext, so read it as one.
+  return stripBearer(
+    (
+      transportContext as HTTPTransportContext | undefined
+    )?.request.adapter.getHeader("authorization"),
+  )
 }
 
-/** The wallet that signed the x402 payment (EIP-3009 `from`). */
-function paymentPayer(paymentPayload: unknown): string | undefined {
-  const payload = (paymentPayload as { payload?: unknown } | undefined)?.payload
-  const from = (payload as { authorization?: { from?: unknown } } | undefined)
-    ?.authorization?.from
+/**
+ * The wallet that signed the x402 payment (EIP-3009 `from`). The library guard
+ * only proves an `authorization` field is present, so the address itself is
+ * still checked before it is trusted as the payer. Anything else reads as no
+ * payer, which aborts the payment.
+ */
+export function paymentPayer(
+  payload: Record<string, unknown>,
+): string | undefined {
+  // Safe input for the guard: it decides the shape, testing only for the
+  // `authorization` key.
+  const candidate = payload as ExactEvmPayloadV2
+  if (!isEIP3009Payload(candidate)) return undefined
+  const from: unknown = candidate.authorization.from
   return typeof from === "string" ? from : undefined
 }
 
 /**
- * Build the seller Express app. Middleware order is the security invariant:
+ * Build the seller Express app. Handler order on the protected route is the
+ * security invariant, and it is literally the argument order of one app.get:
  *
  *   1. ACK-ID identity verification (did:web resolution + JWT verification)
- *   2. Authorization stub (amount cap)
+ *   2. Authorization stub (amount cap)          (1 and 2 are identityGate)
  *   3. x402 payment (402 challenge, facilitator verify + settle)
  *   4. Protected resource handler
  *
@@ -119,10 +134,10 @@ export async function createSeller(options: SellerOptions): Promise<Seller> {
       // retry, and consuming on either would either reject the legitimate retry
       // or let a garbage payment burn a valid nonce. Consumption happens once,
       // at settlement, in the payment hook below.
-      const verified = await verifyIdentityProof(extractBearerToken(req), {
-        audience: identity.did,
-        resolver,
-      })
+      const verified = await verifyIdentityProof(
+        stripBearer(req.headers.authorization),
+        { audience: identity.did, resolver },
+      )
       const decision = await authorize({ did: verified.did, price })
       if (!decision.allowed) {
         res.status(403).json({
@@ -147,7 +162,6 @@ export async function createSeller(options: SellerOptions): Promise<Seller> {
     // here, or this handler would call next twice.
     next()
   }
-  app.use(PROTECTED_PATH, identityGate)
 
   // 3: x402 payment: only reachable with a verified, authorized identity.
   // onAfterVerify runs once the facilitator has verified the payment but before
@@ -167,60 +181,63 @@ export async function createSeller(options: SellerOptions): Promise<Seller> {
       // consume nothing: otherwise a bogus payment quoting the bound wallet
       // would burn a valid proof's nonce and deny the real holder.
       if (!ctx.result.isValid) return Promise.resolve()
-      const token = bearerFromTransport(ctx.transportContext)
-      const bound = token
-        ? readBoundPaymentAddress(token)?.toLowerCase()
-        : undefined
-      const payer = paymentPayer(ctx.paymentPayload)?.toLowerCase()
-      if (
-        token === undefined ||
-        bound === undefined ||
-        payer === undefined ||
-        bound !== payer
-      ) {
-        return Promise.resolve({
-          abort: true as const,
-          reason: "identity_payer_mismatch",
-          message:
-            "Payment wallet is not the address bound in the identity proof",
-        })
-      }
       try {
+        const token = bearerFromTransport(ctx.transportContext)
+        const bound = token
+          ? readBoundPaymentAddress(token)?.toLowerCase()
+          : undefined
+        const payer = paymentPayer(ctx.paymentPayload.payload)?.toLowerCase()
+        if (
+          token === undefined ||
+          bound === undefined ||
+          payer === undefined ||
+          bound !== payer
+        ) {
+          return Promise.resolve({
+            abort: true as const,
+            reason: "identity_payer_mismatch",
+            message:
+              "Payment wallet is not the address bound in the identity proof",
+          })
+        }
         consumeProofNonce(token, nonceCache)
       } catch (error) {
-        // x402 swallows a hook throw and settles the payment anyway, so a
-        // failure here must abort explicitly: settling without consuming
-        // the nonce would leave the proof replayable.
+        // x402 swallows a hook throw and settles the payment anyway, so nothing
+        // in this hook may escape: an unchecked failure would settle without
+        // binding the payer or consuming the nonce.
         const identityError = error instanceof IdentityError ? error : undefined
         return Promise.resolve({
           abort: true as const,
-          reason: identityError?.code ?? "identity_nonce_check_failed",
+          reason: identityError?.code ?? "identity_check_failed",
           message:
             identityError?.message ??
-            "Identity nonce could not be consumed at settlement",
+            "Identity could not be checked at settlement",
         })
       }
       return Promise.resolve()
     })
-  app.use(
-    paymentMiddleware(
-      {
-        [`GET ${PROTECTED_PATH}`]: {
-          accepts: {
-            scheme: "exact",
-            network,
-            payTo,
-            price,
-          },
-          description: "Premium market signal (demo protected resource)",
+  const payment = paymentMiddleware(
+    {
+      [`GET ${PROTECTED_PATH}`]: {
+        accepts: {
+          scheme: "exact",
+          network,
+          payTo,
+          price,
         },
+        description: "Premium market signal (demo protected resource)",
       },
-      resourceServer,
-    ),
+    },
+    resourceServer,
   )
 
-  // 4: the protected resource
-  app.get(PROTECTED_PATH, (_req, res) => {
+  // The invariant, as one ordered chain: gate, payment, resource (4). Mounting
+  // them together is the point: a separate `app.use` for the gate could be
+  // skipped by a route registered above it, and paymentMiddleware reads
+  // `req.path`, so it must stay on a route that keeps the full path (an
+  // `app.use(PROTECTED_PATH, ...)` mount strips it and the route below would
+  // then serve the resource for free).
+  app.get(PROTECTED_PATH, identityGate, payment, (_req, res) => {
     res.json({
       report: "premium-market-signal",
       signal: "accumulate",
@@ -229,6 +246,20 @@ export async function createSeller(options: SellerOptions): Promise<Seller> {
       issuedAt: new Date().toISOString(),
     })
   })
+
+  // Errors from any handler above: log the stack, return a bare 500. Express's
+  // default handler puts the stack in the response body outside production.
+  app.use(
+    (
+      error: unknown,
+      _req: Request,
+      res: Response,
+      _next: NextFunction,
+    ): void => {
+      console.error(error)
+      res.status(500).json({ error: "internal_error" })
+    },
+  )
 
   return { app, identity }
 }
