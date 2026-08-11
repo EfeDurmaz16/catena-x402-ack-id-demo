@@ -3,14 +3,21 @@
   "version": "0.1.0",
   "description": "Reference demo: ACK-ID (did:web + JWT) identity verification gating an x402 USDC payment on Base Sepolia",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EfeDurmaz16/catena-x402-ack-id-demo.git"
+  },
   "type": "module",
   "private": true,
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=22.13.0",
+    "pnpm": ">=11"
   },
   "packageManager": "pnpm@11.9.0",
   "scripts": {
     "seller": "tsx src/seller/main.ts",
+    "wallet:new": "tsx scripts/new-wallet.ts",
+    "demo": "tsx scripts/demo.ts",
     "demo:valid": "tsx scripts/demo.ts valid",
     "demo:missing-identity": "tsx scripts/demo.ts missing-identity",
     "demo:mismatched-identity": "tsx scripts/demo.ts mismatched-identity",
@@ -25,10 +32,10 @@
     "@agentcommercekit/did": "0.10.1",
     "@agentcommercekit/jwt": "0.9.0",
     "@agentcommercekit/keys": "0.9.0",
-    "@x402/core": "2.19.0",
-    "@x402/evm": "2.19.0",
-    "@x402/express": "2.19.0",
-    "@x402/fetch": "2.19.0",
+    "@x402/core": "2.21.0",
+    "@x402/evm": "2.21.0",
+    "@x402/express": "2.21.0",
+    "@x402/fetch": "2.21.0",
     "express": "^5.1.0",
     "viem": "^2.31.0",
     "zod": "^4.0.5"
