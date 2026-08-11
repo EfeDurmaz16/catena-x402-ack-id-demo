@@ -68,8 +68,24 @@ const { app, identity } = await createSeller({
   authorize: createAmountCapAuthorization(config.AUTHORIZATION_MAX_USD),
 })
 
-// Fail loudly if the port is taken: a stale seller with old config would
-// otherwise serve the demo silently.
+// Fail loudly if anything already serves the port. A bind check alone is
+// not enough: macOS lets a second process bind the same port on the other
+// IP family, and the buyer's localhost requests then reach the stale
+// seller while this one believes it is serving the demo. A connect probe
+// catches that regardless of address family.
+const alreadyServing = await fetch(config.sellerBaseUrl, {
+  signal: AbortSignal.timeout(750),
+}).then(
+  () => true,
+  () => false,
+)
+if (alreadyServing) {
+  console.error(
+    `Something is already serving ${config.sellerBaseUrl}. Stop the other seller (pnpm seller), or set SELLER_PORT in .env, then rerun.`,
+  )
+  process.exit(2)
+}
+
 const server: Server = await new Promise<Server>((resolve, reject) => {
   const s = app.listen(config.SELLER_PORT, () => {
     resolve(s)
