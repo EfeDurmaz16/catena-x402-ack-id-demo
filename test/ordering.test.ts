@@ -279,11 +279,11 @@ describe("identity-before-payment ordering", () => {
 })
 
 /**
- * Records calls like the fake it extends, but answers verify with a verdict
+ * Records calls like the fake it extends, but answers verify with a result
  * of an arbitrary runtime shape, the way a broken facilitator client would.
  */
 class MalformedVerdictFacilitator extends FakeFacilitatorClient {
-  constructor(private readonly verdict: unknown) {
+  constructor(private readonly result: unknown) {
     super()
   }
 
@@ -292,7 +292,7 @@ class MalformedVerdictFacilitator extends FakeFacilitatorClient {
     requirements: PaymentRequirements,
   ): Promise<VerifyResponse> {
     await super.verify(payload, requirements)
-    return { isValid: this.verdict } as VerifyResponse
+    return this.result as VerifyResponse
   }
 }
 
@@ -303,13 +303,14 @@ describe("hardening against a broken payment layer", () => {
   // truthiness check in the seller's hook, so the payment would settle even
   // though the facilitator never said isValid === true.
   it.each([
-    ['the string "false"', "false"],
-    ["the number 1", 1],
-    ["missing entirely", undefined],
+    ['the string "false"', { isValid: "false" }],
+    ["the number 1", { isValid: 1 }],
+    ["missing entirely", {}],
+    ["a null result", null],
   ] as const)(
     "facilitator verdict is %s: request fails and nothing settles",
-    async (_name, verdict) => {
-      const facilitator = new MalformedVerdictFacilitator(verdict)
+    async (_name, verifyResult) => {
+      const facilitator = new MalformedVerdictFacilitator(verifyResult)
       seller = await startTestSeller({ facilitator })
       const result = await runBuyer("valid", {
         sellerUrl: seller.url,

@@ -183,7 +183,11 @@ export async function createSeller(options: SellerOptions): Promise<Seller> {
       // An explicit false settles nothing, so it must consume nothing:
       // otherwise a bogus payment quoting the bound wallet would burn a
       // valid proof's nonce and deny the real holder. Anything else aborts.
-      const verdict: unknown = ctx.result.isValid
+      // Optional-chained: a null result must abort below, not throw here
+      // (x402 swallows hook throws and proceeds).
+      const verdict: unknown = (
+        ctx.result as { isValid?: unknown } | null | undefined
+      )?.isValid
       if (verdict === false) return Promise.resolve()
       if (verdict !== true) {
         return Promise.resolve({
