@@ -1,0 +1,226 @@
+# Architecture: identity before payment
+
+## The invariant
+
+A request reaches payment logic only after its identity proof is verified and
+the authorization stub approves it. Enforcement is Express middleware order,
+not convention:
+
+```
+GET /api/premium
+  1. identityGate        resolve iss (did:web), verify JWT signature against
+                         the DID document, check aud, exp, nonce
+  2. authorization stub  verified DID + amount cap; single injectable function
+  3. x402 middleware     402 challenge, then facilitator verify + settle
+  4. protected handler
+```
+
+Every rejection in 1-2 ends the response without calling `next()`, so 3-4 are
+unreachable for rejected requests.
+
+## Proven, not asserted
+
+The seller receives its `FacilitatorClient` (verify/settle/getSupported) by
+injection. Tests inject a recording fake and assert the exact claim for each
+class of rejection:
+
+- **Rejected at the identity gate** (missing, malformed, expired, mismatched
+  key, wrong audience, non-did:web, over-cap): the response is 401/403 and
+  both `verify` and `settle` are zero. Three of them (missing, mismatched,
+  expired) are also driven a second time with a payment header present, so a
+  regression that skips the gate when a payment is attached cannot pass
+  unnoticed.
+- **Rejected at the payment hook** (replayed nonce, payer not bound to the
+  proof): the request carries a real payment, so the facilitator's `verify`
+  does run; the hook then aborts and `settle` never does. The replay test
+  asserts exactly this shape (two verifies, one settle) and the response
+  is the payment layer's own 402, not a 401/403.
+
+`getSupported` is capability discovery, not settlement. The middleware starts
+the call when it is constructed and awaits it on the first request to the paid
+route, retrying only if that call failed; `verify` and `settle` never trigger
+it. The
+demo scripts wrap the real facilitator in a counting decorator and print the
+counts.
+
+```mermaid
+flowchart TB
+  subgraph gate["Identity gate: before any payment"]
+    direction LR
+    M[missing] --> R1["401 or 403<br/>verify 0, settle 0"]
+    E[expired] --> R1
+    K[wrong key] --> R1
+    AU[wrong audience] --> R1
+    NW[not did:web] --> R1
+    CAP[over cap] --> R1
+  end
+
+  subgraph hook["Payment hook: after verify, before settle"]
+    direction LR
+    RP[replayed nonce] --> R2["402 from the payment layer<br/>verify ran, settle 0"]
+    PM[payer not bound to proof] --> R2
+  end
+
+  gate --> hook
+```
+
+## The identity proof
+
+A did-jwt JWT (ES256K) built with the agentcommercekit libraries:
+
+```
+{ iss: <buyer did:web>, aud: <seller did:web>, nonce: <uuid>, exp: now+300s }
+```
+
+The seller resolves `iss` to its did:web document and checks the signature
+against the published keys. `iss` must be did:web specifically: the default
+resolver also handles did:key and did:pkh, but a self-issued did:key verifies
+against its own embedded key and proves no domain control, so those methods
+are rejected. "Mismatched identity" means the JWT was signed by a key the
+claimed DID does not publish. The VC/ControllerCredential layer of ACK-ID is
+intentionally out of scope.
+
+The proof also binds the wallet that pays: a `paymentAddress` claim naming the
+buyer's EVM address.
+
+## Binding identity to the payer
+
+Verifying who is asking is not enough if anyone's payment can satisfy it. The
+proof commits to a `paymentAddress`, and an `onAfterVerify` hook on the x402
+resource server compares it to the wallet that actually signed the payment
+(the EIP-3009 `from`). The hook runs after the facilitator verifies the
+payment but before it settles, so a mismatch is rejected without moving money.
+This closes the attack of pairing a valid identity proof with someone else's
+payment authorization: the authenticated identity must control the paying
+wallet.
+
+## Nonce rules
+
+x402 sends the same proof twice: an unpaid request that earns the 402, then a
+paid retry. Three questions decide the design:
+
+- **When is the nonce consumed?** At settlement. The payment hook
+  (`consumeProofNonce`) marks it used only after the facilitator has verified
+  the payment and it is bound to the paying wallet, immediately before settle.
+- **Why not earlier?** A request that never settles (an unpaid probe, an
+  undecodable payment, a payment from the wrong wallet) must not burn a
+  legitimate proof's nonce. Consuming on payment-header presence does exactly
+  that, and denies the real holder.
+- **What does the client see on a replay?** A fresh 402 challenge, not a
+  401/403: the hook returns `identity_replayed` inside the x402 layer, so the
+  rejection is expressed in the payment layer's own terms.
+
+Two hardening rules (see `JWT_SKEW_SECONDS`, `MAX_PROOF_LIFETIME_SECONDS`
+in `src/identity.ts`):
+
+- A proof must carry a bounded `exp`. did-jwt skips its expiry check when
+  `exp` is absent, so a non-expiring proof would verify forever and its nonce
+  entry would never be pruned.
+- The nonce is reserved until `exp` plus did-jwt's ~300s clock skew. A shorter
+  reservation would be pruned while the proof still verifies.
+
+The binding check runs before nonce consumption on purpose: a proof paired with
+someone else's payment is rejected without burning the real holder's nonce. The
+cache is in-memory, single-instance scope.
+
+## Payment leg
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant B as Buyer agent
+  participant S as Seller
+  participant D as Buyer did:web host
+  participant F as Facilitator
+  participant C as Base Sepolia
+
+  B->>S: GET with identity proof
+  S->>D: resolve did:web document
+  D-->>S: public keys
+  S->>S: verify signature, aud, exp
+  S-->>B: 402 challenge
+  B->>S: retry with signed EIP-3009 payment
+  S->>F: verify
+  F-->>S: valid, payer address
+  S->>S: payer bound to proof? consume nonce
+  S->>F: settle
+  F->>C: USDC transfer
+  S-->>B: 200 premium resource
+  B->>C: read receipt: exact amount, sender, recipient
+```
+
+x402 v2 (`@x402/*` 2.21.0), `exact` scheme, network `eip155:84532`, USDC
+`0x036CbD53842c5426634e7929541eC2318f3dCF7e`. The buyer signs a gasless
+EIP-3009 `transferWithAuthorization`; the facilitator settles on-chain and the
+response carries the transaction in `PAYMENT-RESPONSE`.
+
+## Confirming the settlement
+
+The facilitator's `PAYMENT-RESPONSE` is a claim; the source of truth for "the
+money reached the Catena deposit address" is the chain. After settlement the
+demo reads the transaction receipt over a public Base Sepolia RPC
+(`src/onchain.ts`) and checks that a USDC `Transfer` for the exact amount went
+from the buyer's wallet to the seller's Catena deposit address. Pinning the
+sender is what makes the check mean something: without it, a stale transaction
+from an earlier run, or anyone else paying that address, would confirm as this
+run's settlement. A reverted transaction, a transfer to the wrong address, or
+the wrong amount fails the run; an unreadable receipt (RPC lag) is reported but
+does not fail it, since the facilitator already settled. This uses only a
+public RPC, so it adds no Catena CLI or SDK dependency.
+
+`@x402/*` 2.21.0 added a server-side check that the settlement transaction
+carries a matching transfer event. That runs inside the payment library, on the
+seller's own report of what it did. The check here reads the chain from the
+buyer's side, against an address the buyer chose, so it still stands: it is a
+different trust boundary, not a duplicate.
+
+One precision: arriving at the address is not the same as being credited to the
+account. A payments platform can run a receive-policy guard (allowed
+tokens/senders) that lets a non-matching transfer settle on-chain but holds it
+rather than crediting the balance. The on-chain check proves arrival; the
+Catena ledger (console or account read) is the authority on crediting. For this
+demo's own USDC transfer the two agree.
+
+## Catena surface
+
+The seller's `payTo` is a Catena sandbox account's base-sepolia USDC deposit
+address, so settlement lands in a Catena-governed account and shows up in its
+ledger. The facilitator URL is env-injected (`X402_FACILITATOR_URL`, default
+x402.org); a Catena facilitator would be a config change. The repo consumes
+public surfaces only: agentcommercekit packages, x402 packages, the public
+facilitator, and the sandbox account as the receiving bank.
+
+## Known limitations
+
+Real gaps a production version would close; called out so they are choices,
+not oversights.
+
+- **At-most-once nonce, no settlement reconciliation.** The nonce is consumed
+  at settlement, so a payment that never settles no longer burns the proof. The
+  remaining gap: if settlement succeeds and the response is then lost, retrying
+  the same proof is rejected as a replay rather than reconciled, a
+  charge-without-delivery path. Production needs an idempotency key derived from
+  the payment authorization so a retried settlement converges instead of
+  double-charging or hard-failing.
+- **Single process.** The nonce cache is in-memory, so replay protection does
+  not hold across replicas or restarts. A shared store (Redis) keyed on the
+  nonce is the production form.
+- **did:web resolution reaches out before the signature is checked.** The
+  seller fetches the URL a proof names, so an issuer chooses an outbound
+  request. Two bounds are in place: a 5s timeout, and `redirect: "error"`
+  (the library's http/https allowlist applies to the first URL only, so a
+  redirect would otherwise carry the seller to plain http or an internal
+  address; this is reported upstream so the safe behavior becomes the
+  default). A production deployment behind an internal network should also
+  resolve the hostname first and refuse private, loopback and link-local
+  ranges, pinning the connection to the resolved address so DNS cannot
+  change under it, and stream the response under a size cap (nothing bounds
+  the body today). Those need connection-level control that would dominate a
+  demo whose subject is identity before payment.
+- **No request rate limiting.** The seller does not cap request rate, so a
+  caller can hammer the endpoint unbounded (each request costs a did:web
+  resolution, bounded by the 5s fetch timeout, and a nonce-cache lookup,
+  bounded by the cap). A production service would add per-IP / per-DID rate
+  limiting. The public facilitator and RPC apply their own limits, and the
+  price is required to be greater than zero so the demo never generates a
+  0-value settlement.
