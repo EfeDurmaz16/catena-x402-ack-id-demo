@@ -14,9 +14,14 @@ import { runBuyer, signScenarioProof } from "../src/buyer/buyer.js"
 import { startDidHost } from "../src/buyer/did-host.js"
 import { createIdentity, createIdentityProof } from "../src/identity.js"
 import { PROTECTED_PATH } from "../src/seller/server.js"
-import { startTestSeller } from "./helpers.js"
+import { FakeFacilitatorClient, startTestSeller } from "./helpers.js"
 import type { Scenario } from "../src/buyer/buyer.js"
 import type { DidHost } from "../src/buyer/did-host.js"
+import type {
+  PaymentPayload,
+  PaymentRequirements,
+  VerifyResponse,
+} from "@x402/core/types"
 import type { TestSeller } from "./helpers.js"
 
 // Unfunded throwaway key: fine here because the fake facilitator approves
@@ -270,5 +275,66 @@ describe("identity-before-payment ordering", () => {
     })
     expect(paid.status).toBe(200)
     expect(seller.facilitator.settleCalls).toHaveLength(1)
+  })
+})
+
+/**
+ * Records calls like the fake it extends, but answers verify with a verdict
+ * of an arbitrary runtime shape, the way a broken facilitator client would.
+ */
+class MalformedVerdictFacilitator extends FakeFacilitatorClient {
+  constructor(private readonly verdict: unknown) {
+    super()
+  }
+
+  override async verify(
+    payload: PaymentPayload,
+    requirements: PaymentRequirements,
+  ): Promise<VerifyResponse> {
+    await super.verify(payload, requirements)
+    return { isValid: this.verdict } as VerifyResponse
+  }
+}
+
+describe("hardening against a broken payment layer", () => {
+  // The static VerifyResponse type promises a boolean verdict, but nothing
+  // enforces it at runtime for a custom facilitator client. A truthy
+  // non-boolean ("false", 1) passes both x402's settle check and a naive
+  // truthiness check in the seller's hook, so the payment would settle even
+  // though the facilitator never said isValid === true.
+  it.each([
+    ['the string "false"', "false"],
+    ["the number 1", 1],
+    ["missing entirely", undefined],
+  ] as const)(
+    "facilitator verdict is %s: request fails and nothing settles",
+    async (_name, verdict) => {
+      const facilitator = new MalformedVerdictFacilitator(verdict)
+      seller = await startTestSeller({ facilitator })
+      const result = await runBuyer("valid", {
+        sellerUrl: seller.url,
+        sellerDid: seller.identity.did,
+        evmPrivateKey: TEST_PRIVATE_KEY,
+      })
+      expect(result.status).not.toBe(200)
+      expect(facilitator.verifyCalls).toHaveLength(1)
+      expect(facilitator.settleCalls).toHaveLength(0)
+    },
+  )
+
+  it("HEAD with a valid identity and no payment: 405, payment layer untouched", async () => {
+    // Express answers HEAD through app.get handlers, but the x402 route key
+    // only covers GET, so without an explicit HEAD route the handler would
+    // serve a 200 with no payment involved.
+    seller = await startTestSeller()
+    const proof = await buildProof(seller.identity.did, "valid")
+    const response = await fetch(`${seller.url}${PROTECTED_PATH}`, {
+      method: "HEAD",
+      headers: proof ? { authorization: `Bearer ${proof}` } : {},
+    })
+    expect(response.status).toBe(405)
+    expect(response.headers.get("allow")).toBe("GET")
+    expect(seller.facilitator.verifyCalls).toHaveLength(0)
+    expect(seller.facilitator.settleCalls).toHaveLength(0)
   })
 })
