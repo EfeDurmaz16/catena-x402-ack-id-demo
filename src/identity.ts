@@ -24,12 +24,11 @@ export interface Identity {
  * - `redirect: "error"`. The library applies its http/https allowlist to the
  *   first URL only, and Node follows redirects by default, so without this a
  *   did:web on https could redirect the seller into plain http or an internal
- *   address. Legitimate did:web documents are served directly. (Reported
- *   upstream; the library default should be the safe one.)
+ *   address. Legitimate did:web documents are served directly.
  *
- * ponytail: a response-size cap would need body streaming, and blocking
- * private address ranges outright needs DNS-level pinning; both are noted in
- * docs/architecture.md as production work, not demo scope.
+ * Not bounded here: response size (needs body streaming) and private address
+ * ranges (needs DNS-level pinning). Both are listed in docs/architecture.md
+ * as production work.
  */
 export function createSellerResolver(timeoutMs = 5000): DidResolver {
   return getDidResolver({
@@ -168,8 +167,8 @@ const MAX_PROOF_LIFETIME_SECONDS = 900
 /**
  * In-memory nonce replay cache. The ACK libraries verify signatures and
  * standard JWT claims but leave replay protection to the application.
- * ponytail: single-process only; swap for a shared store (Redis) if the
- * seller ever runs more than one instance (see docs/architecture.md).
+ * Single-process only: a seller running more than one instance needs a
+ * shared store such as Redis instead (see docs/architecture.md).
  */
 export class NonceCache {
   private readonly seen = new Map<string, number>()

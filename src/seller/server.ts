@@ -176,11 +176,26 @@ export async function createSeller(options: SellerOptions): Promise<Seller> {
   const resourceServer = new x402ResourceServer(facilitatorClient)
     .register(network, new ExactEvmScheme())
     .onAfterVerify((ctx) => {
-      // x402 runs this hook with the facilitator's result whether or not the
-      // payment verified. A rejected payment settles nothing, so it must
-      // consume nothing: otherwise a bogus payment quoting the bound wallet
-      // would burn a valid proof's nonce and deny the real holder.
-      if (!ctx.result.isValid) return Promise.resolve()
+      // The verdict is typed boolean but arrives runtime-unvalidated from the
+      // facilitator client, and x402 settles on its truthiness: a garbage
+      // verdict like "false" would settle a payment the facilitator never
+      // declared valid. Only an explicit true proceeds to the checks below.
+      // An explicit false settles nothing, so it must consume nothing:
+      // otherwise a bogus payment quoting the bound wallet would burn a
+      // valid proof's nonce and deny the real holder. Anything else aborts.
+      // Optional-chained: a null result must abort below, not throw here
+      // (x402 swallows hook throws and proceeds).
+      const verdict: unknown = (
+        ctx.result as { isValid?: unknown } | null | undefined
+      )?.isValid
+      if (verdict === false) return Promise.resolve()
+      if (verdict !== true) {
+        return Promise.resolve({
+          abort: true as const,
+          reason: "facilitator_verdict_malformed",
+          message: "Facilitator verify result was not a boolean verdict",
+        })
+      }
       try {
         const token = bearerFromTransport(ctx.transportContext)
         const bound = token
@@ -230,6 +245,13 @@ export async function createSeller(options: SellerOptions): Promise<Seller> {
     },
     resourceServer,
   )
+
+  // Express answers HEAD through app.get handlers, but the x402 route key
+  // above only covers GET, so a HEAD request would skip the payment layer
+  // and reach the handler. Registered before app.get so it wins the route.
+  app.head(PROTECTED_PATH, (_req, res) => {
+    res.set("Allow", "GET").status(405).end()
+  })
 
   // The invariant, as one ordered chain: gate, payment, resource (4). Mounting
   // them together is the point: a separate `app.use` for the gate could be

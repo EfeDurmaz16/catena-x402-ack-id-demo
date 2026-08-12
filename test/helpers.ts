@@ -71,10 +71,14 @@ export interface TestSeller {
  * seller's did:web identity encodes the real base URL.
  */
 export async function startTestSeller(
-  options: { price?: string; authorize?: Authorize } = {},
+  options: {
+    price?: string
+    authorize?: Authorize
+    facilitator?: FakeFacilitatorClient
+  } = {},
 ): Promise<TestSeller> {
   const price = options.price ?? "$0.001"
-  const facilitator = new FakeFacilitatorClient()
+  const facilitator = options.facilitator ?? new FakeFacilitatorClient()
 
   const server: Server = createServer()
   const port = await new Promise<number>((resolve, reject) => {
