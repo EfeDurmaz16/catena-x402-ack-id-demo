@@ -1,4 +1,4 @@
-# catena-x402-ack-id-demo
+# x402-ack-id-demo
 
 An [x402](https://github.com/x402-foundation/x402) seller that verifies an [ACK-ID](https://www.agentcommercekit.com) identity proof before any payment logic runs, then settles USDC on Base Sepolia. No verified identity, no payment. Tests assert the settlement adapter is never invoked for rejected identities.
 

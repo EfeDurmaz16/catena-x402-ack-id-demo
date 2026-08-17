@@ -9,5 +9,5 @@ The seller binds a local port and serves an unauthenticated `/healthz` and
 did:web document; do not expose it on a public interface.
 
 Report a vulnerability by opening an issue at
-https://github.com/EfeDurmaz16/catena-x402-ack-id-demo/issues, or privately via
+https://github.com/catena-oss/x402-ack-id-demo/issues, or privately via
 GitHub Security Advisories on the same repository.
